@@ -57,7 +57,6 @@ for case in cases:
     sns.histplot(data=df, x='ttft_ms', kde=True, color='red', element="step", fill=False, ax=axes[0, 1], label='Total')
 
     # Add TTFT 5000ms line
-    TARGET_TTFT = 5000
     axes[0, 1].axvline(TARGET_TTFT, color='red', linestyle='--', linewidth=2, label=f'Target {TARGET_TTFT}ms')
     
     # Calculate and display percentage
@@ -81,6 +80,7 @@ for case in cases:
     # 4. Total Latency Comparison (Total Latency by Model)
     sns.boxplot(data=df, x='model', y='total_latency_ms', hue='model', palette=palette, order=unique_models, ax=axes[1, 1], legend=False)
     axes[1, 1].set_title('4. Total Latency Overview per Model')
+    axes[1, 1].yaxis.set_major_locator(MultipleLocator(1000)) # TTFT 1000ms per unit
     axes[1, 1].grid(True)
 
     plt.tight_layout()

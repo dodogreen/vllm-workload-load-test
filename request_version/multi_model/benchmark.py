@@ -8,18 +8,18 @@ import argparse
 from datetime import datetime
 from tqdm import tqdm
 
-API_ENDPOINT = "http://localhost:8001/v1/completions" 
-MODELS = ['Chatbot-A-large', 'Chatbot-B', 'Chatbot-C']
+API_ENDPOINT = "http://10.137.80.46:8000/v1/completions" 
+MODELS = ['Chatbot-A', 'Chatbot-B', 'Chatbot-C']
 
 # Test duration (seconds)
 TEST_DURATION = 60
 
 # Base concurrency (Requests Per Second)
-TARGET_RPS = 1
+TARGET_RPS = 3
 
 # Input Prompt (length should be fixed to exclude input length interference, focusing on switching)
-PROMPT_TEXT = "Define the Service Level Objective in one sentence."
-MAX_TOKENS = 50
+PROMPT_TEXT = "Define the Service Level Objective in one sentence." * 14 # token: 9
+MAX_TOKENS = 64
 
 async def send_request(session, request_id, model_name, scenario_name):
     """
@@ -187,7 +187,29 @@ async def run_scenario_bursty(session, results, seed):
             pbar.update(now - last_update_time)
             last_update_time = now
 
-async def run_single_test(session, test_case, seed):
+async def run_scenario_single_model(session, results, model_index=0):
+    """Scenario 5: Single Model Test (Baseline)"""
+    model_name = MODELS[model_index]
+    print(f"--- Starting Scenario: Single Model Test (Model: {model_name}) ---")
+    
+    start_test = time.time()
+    req_id = 0
+    
+    with tqdm(total=TEST_DURATION, desc=f"Single Model ({model_name}) Progress", unit="s") as pbar:
+        last_update_time = start_test
+        
+        while time.time() - start_test < TEST_DURATION:
+            task = asyncio.create_task(send_request(session, f"SINGLE-{req_id}", model_name, "single_model"))
+            results.append(task)
+            req_id += 1
+            
+            await asyncio.sleep(1.0 / TARGET_RPS)
+            
+            now = time.time()
+            pbar.update(now - last_update_time)
+            last_update_time = now
+
+async def run_single_test(session, test_case, seed, model_index=0):
     all_tasks = []
     case_name = ""
     
@@ -200,6 +222,9 @@ async def run_single_test(session, test_case, seed):
     elif test_case == 3:
         case_name = "bursty"
         await run_scenario_bursty(session, all_tasks, seed)
+    elif test_case == 5:
+        case_name = f"single_model_{MODELS[model_index]}"
+        await run_scenario_single_model(session, all_tasks, model_index)
     
     print(f"\nAll requests dispatched for {case_name}. Waiting for pending responses...")
     
@@ -225,7 +250,8 @@ async def main(seed):
     print("1. Round Robin")
     print("2. Zipfian (Real Distribution)")
     print("3. Bursty")
-    print("4. Run All")
+    print("4. Run All (Multi-Model)")
+    print("5. Single Model Test")
     
     try:
         test_case = int(input().strip())
@@ -233,9 +259,23 @@ async def main(seed):
         print("Invalid input")
         return
 
-    if test_case not in [1, 2, 3, 4]:
-        print(f"Please enter option 1, 2, 3, or 4")
+    if test_case not in [1, 2, 3, 4, 5]:
+        print(f"Please enter option 1, 2, 3, 4, or 5")
         return
+    
+    model_index = 0
+    if test_case == 5:
+        print("\nSelect model to test:")
+        for i, model in enumerate(MODELS):
+            print(f"{i}. {model}")
+        try:
+            model_index = int(input().strip())
+            if model_index < 0 or model_index >= len(MODELS):
+                print(f"Invalid model index. Please enter 0-{len(MODELS)-1}")
+                return
+        except ValueError:
+            print("Invalid input")
+            return
 
     async with aiohttp.ClientSession() as session:
         if test_case == 4:
@@ -246,7 +286,7 @@ async def main(seed):
                     print("\nWaiting 10 seconds before next test...")
                     await asyncio.sleep(10)
         else:
-            await run_single_test(session, test_case, seed)
+            await run_single_test(session, test_case, seed, model_index)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

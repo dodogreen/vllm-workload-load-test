@@ -9,3 +9,5 @@ results
 *.csv
 
 setting.txt
+*.jsonl
+*.log
