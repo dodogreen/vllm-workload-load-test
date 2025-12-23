@@ -1,12 +1,45 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import MultipleLocator, MaxNLocator
+import numpy as np
 
 TARGET_TTFT=5000 # ms
 
+def get_smart_interval(data_range, target_ticks=10):
+    """
+    Calculate smart tick interval based on data range
+
+    Args:
+        data_range: The range of data (max - min)
+        target_ticks: Target number of ticks (default: 10)
+
+    Returns:
+        A nice round number for tick interval
+    """
+    if data_range == 0:
+        return 1
+
+    # Calculate raw interval
+    raw_interval = data_range / target_ticks
+
+    # Round to nice numbers: 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000...
+    magnitude = 10 ** np.floor(np.log10(raw_interval))
+    residual = raw_interval / magnitude
+
+    if residual <= 1.5:
+        nice_interval = 1 * magnitude
+    elif residual <= 3:
+        nice_interval = 2 * magnitude
+    elif residual <= 7:
+        nice_interval = 5 * magnitude
+    else:
+        nice_interval = 10 * magnitude
+
+    return nice_interval
+
 # Read data
-cases = ["round_robin", "zipfian", "bursty"]
+cases = ["round_robin", "zipfian", "bursty", "rag"]
 dfs = {}
 all_models = set()
 
@@ -40,8 +73,16 @@ for case in cases:
     sns.scatterplot(data=df, x='relative_start_time', y='ttft_ms', hue='model', palette=palette, hue_order=unique_models, ax=axes[0, 0])
     axes[0, 0].set_title('1. System Stability: TTFT over Time')
     axes[0, 0].set_xlabel('Time Elapsed (s)')
-    axes[0, 0].xaxis.set_major_locator(MultipleLocator(10))  # Time 10s per unit
-    axes[0, 0].yaxis.set_major_locator(MultipleLocator(1000)) # TTFT 1000ms per unit
+
+    # Auto-adjust X-axis (time) interval
+    time_range = df['relative_start_time'].max() - df['relative_start_time'].min()
+    time_interval = get_smart_interval(time_range, target_ticks=10)
+    axes[0, 0].xaxis.set_major_locator(MultipleLocator(time_interval))
+
+    # Auto-adjust Y-axis (TTFT) interval
+    ttft_range = df['ttft_ms'].max() - df['ttft_ms'].min()
+    ttft_interval = get_smart_interval(ttft_range, target_ticks=10)
+    axes[0, 0].yaxis.set_major_locator(MultipleLocator(ttft_interval))
     axes[0, 0].grid(True)
 
     # 2. Distribution Detection (TTFT Distribution)
@@ -66,7 +107,10 @@ for case in cases:
     axes[0, 1].text(TARGET_TTFT + 100, y_max * 0.9, f'{pct_within:.1f}% <= {TARGET_TTFT}ms', color='red', fontweight='bold')
 
     axes[0, 1].set_title('2. Latency Distribution (Check for Bimodal)')
-    axes[0, 1].xaxis.set_major_locator(MultipleLocator(1000)) # TTFT 1000ms per unit
+
+    # Auto-adjust X-axis (TTFT distribution) interval
+    ttft_dist_interval = get_smart_interval(ttft_range, target_ticks=10)
+    axes[0, 1].xaxis.set_major_locator(MultipleLocator(ttft_dist_interval))
     axes[0, 1].set_xlim(left=0) # Force X-axis to start from 0
     axes[0, 1].grid(True)
 
@@ -74,13 +118,24 @@ for case in cases:
     sns.scatterplot(data=df, x='ttft_ms', y='avg_itl_ms', hue='model', palette=palette, hue_order=unique_models, ax=axes[1, 0])
     axes[1, 0].set_title('3. Bottleneck Analysis: Scheduling(TTFT) vs Compute(ITL)')
     axes[1, 0].set_ylim(bottom=0) # Ensure 0 is visible
-    axes[1, 0].xaxis.set_major_locator(MultipleLocator(1000)) # TTFT 1000ms per unit
+
+    # Auto-adjust X-axis (TTFT) interval
+    axes[1, 0].xaxis.set_major_locator(MultipleLocator(ttft_interval))
+
+    # Auto-adjust Y-axis (ITL) interval
+    itl_range = df['avg_itl_ms'].max() - df['avg_itl_ms'].min()
+    itl_interval = get_smart_interval(itl_range, target_ticks=10)
+    axes[1, 0].yaxis.set_major_locator(MultipleLocator(itl_interval))
     axes[1, 0].grid(True)
 
     # 4. Total Latency Comparison (Total Latency by Model)
     sns.boxplot(data=df, x='model', y='total_latency_ms', hue='model', palette=palette, order=unique_models, ax=axes[1, 1], legend=False)
     axes[1, 1].set_title('4. Total Latency Overview per Model')
-    axes[1, 1].yaxis.set_major_locator(MultipleLocator(1000)) # TTFT 1000ms per unit
+
+    # Auto-adjust Y-axis (Total Latency) interval
+    total_latency_range = df['total_latency_ms'].max() - df['total_latency_ms'].min()
+    total_latency_interval = get_smart_interval(total_latency_range, target_ticks=10)
+    axes[1, 1].yaxis.set_major_locator(MultipleLocator(total_latency_interval))
     axes[1, 1].grid(True)
 
     plt.tight_layout()
