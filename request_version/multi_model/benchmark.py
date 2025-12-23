@@ -8,73 +8,192 @@ import argparse
 from datetime import datetime
 from tqdm import tqdm
 
-API_ENDPOINT = "http://10.137.80.46:8000/v1/completions" 
-MODELS = ['Chatbot-A', 'Chatbot-B', 'Chatbot-C']
+API_ENDPOINT = "http://localhost:8000/v1/completions"
+MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
+# MODELS =  ['Chatbot', 'Chatbot']
 
 # Test duration (seconds)
 TEST_DURATION = 60
 
+# Request timeout (seconds)
+REQUEST_TIMEOUT = 600
+
 # Base concurrency (Requests Per Second)
-TARGET_RPS = 3
+TARGET_RPS = 50
 
 # Input Prompt (length should be fixed to exclude input length interference, focusing on switching)
 PROMPT_TEXT = "Define the Service Level Objective in one sentence." * 14 # token: 9
 MAX_TOKENS = 64
 
-async def send_request(session, request_id, model_name, scenario_name):
-    """
-    Send a single request, using Streaming mode to measure TTFT and ITL
-    """
-    url = API_ENDPOINT
-    payload = {
+
+
+
+# add params endpoint, payload                                                                                                                                                                                                                 
+# 看 vllm 怎麼 random input 的                                                                                                                                                                                                                 
+# set random int 500 and set min token output                                                                                                                                                                                                  
+# Default endpoints for different model types
+
+DEFAULT_ENDPOINTS = {
+    "llm": "http://localhost:8000/v1/completions",
+    "vlm": "http://localhost:8000/v1/chat/completions",
+    "embedding": "http://localhost:8000/v1/embeddings",
+}
+
+# Default payload generators for different model types
+def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
+    """Default payload for LLM (text completion) models"""
+    return {
         "model": model_name,
-        "prompt": PROMPT_TEXT,
-        "max_tokens": MAX_TOKENS,
+        "prompt": prompt or PROMPT_TEXT,
+        "max_tokens": max_tokens or MAX_TOKENS,
         "temperature": 0.7,
         "stream": True
     }
-    
+
+def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
+    """Default payload for VLM (vision-language) models"""
+    return {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_url or "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-702nature-702702702702702702702trail.jpg/1280px-Gfp-wisconsin-madison-the-702nature-702702702702702702702trail.jpg"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt or "What is in this image?"
+                    }
+                ]
+            }
+        ],
+        "max_tokens": max_tokens or MAX_TOKENS,
+        "temperature": 0.7,
+        "stream": True
+    }
+
+def get_default_embedding_payload(model_name, input_text=None):
+    """Default payload for embedding models"""
+    return {
+        "model": model_name,
+        "input": input_text or PROMPT_TEXT,
+        "encoding_format": "float"
+    }
+
+
+# Model type mapping for RAG scenario
+MODEL_TYPE_MAP = {
+    "Chatbot": "llm",
+    "VisionProcessor": "vlm",
+    "Embedding": "embedding",
+}
+
+def get_endpoint_and_payload_for_model(model_name):
+    """
+    Get the appropriate endpoint and payload based on model name.
+    Returns (endpoint, payload) tuple.
+    """
+    model_type = MODEL_TYPE_MAP.get(model_name, "llm")
+
+    if model_type == "llm":
+        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name)
+    elif model_type == "vlm":
+        return DEFAULT_ENDPOINTS["vlm"], get_default_vlm_payload(model_name)
+    elif model_type == "embedding":
+        return DEFAULT_ENDPOINTS["embedding"], get_default_embedding_payload(model_name)
+    else:
+        # Default to LLM
+        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name)
+
+
+async def send_request(session, request_id, model_name, scenario_name, endpoint=None, payload=None):
+    """
+    Send a single request, using Streaming mode to measure TTFT and ITL
+
+    Args:
+        session: aiohttp ClientSession
+        request_id: Unique identifier for the request
+        model_name: Name of the model to use
+        scenario_name: Name of the test scenario
+        endpoint: Custom endpoint URL (defaults to API_ENDPOINT if None)
+        payload: Custom payload dict (defaults to LLM payload if None)
+    """
+    url = endpoint if endpoint is not None else API_ENDPOINT
+
+    # Use custom payload if provided, otherwise use default LLM payload
+    if payload is None:
+        payload = get_default_llm_payload(model_name)
+
+    # Check if this is a streaming request
+    is_streaming = payload.get("stream", False)
+
     start_time = time.time()
     ttft = 0
     total_latency = 0
     token_count = 0
     status = "FAIL"
-    
+    error_reason = ""
+
     try:
         async with session.post(url, json=payload) as response:
             if response.status == 200:
-                first_token_time = None
-                last_token_time = None
-                
-                async for line in response.content:
-                    if line:
-                        current_time = time.time()
-                        
-                        # Capture TTFT (Time of first data received)
-                        if first_token_time is None:
-                            first_token_time = current_time
-                            ttft = (first_token_time - start_time) * 1000 # ms
-                        
-                        last_token_time = current_time
-                        token_count += 1
-                
-                # Calculate total latency
-                if last_token_time:
-                    end_time = last_token_time
-                    total_latency = (end_time - start_time) * 1000 # ms
-                    status = "SUCCESS"
+                if is_streaming:
+                    # Streaming response handling (for LLM/VLM)
+                    first_token_time = None
+                    last_token_time = None
+
+                    async for line in response.content:
+                        if line:
+                            current_time = time.time()
+
+                            # Capture TTFT (Time of first data received)
+                            if first_token_time is None:
+                                first_token_time = current_time
+                                ttft = (first_token_time - start_time) * 1000 # ms
+
+                            last_token_time = current_time
+                            token_count += 1
+
+                    # Calculate total latency
+                    if last_token_time:
+                        end_time = last_token_time
+                        total_latency = (end_time - start_time) * 1000 # ms
+                        status = "SUCCESS"
+                    else:
+                        # 200 OK but no content
+                        error_reason = "Empty response"
                 else:
-                    # 200 OK but no content
-                    status = "EMPTY_RESPONSE"
+                    # Non-streaming response handling (for embedding)
+                    result = await response.json()
+                    end_time = time.time()
+                    total_latency = (end_time - start_time) * 1000 # ms
+                    ttft = total_latency  # For non-streaming, TTFT equals total latency
+                    token_count = 1  # Treat as single response
+                    status = "SUCCESS"
             else:
                 # Use tqdm.write to avoid breaking the progress bar
-                tqdm.write(f"Error {response.status}") 
-                pass
-                
+                tqdm.write(f"Error {response.status}")
+                error_reason = f"HTTP {response.status}"
+
+    except asyncio.TimeoutError:
+        error_reason = "Timeout"
+        tqdm.write(f"Request timeout: {request_id}")
+    except aiohttp.ClientConnectorError:
+        error_reason = "Connection refused"
+        tqdm.write(f"Connection refused: {request_id}")
+    except aiohttp.ServerDisconnectedError:
+        error_reason = "Server disconnected"
+        tqdm.write(f"Server disconnected: {request_id}")
     except Exception as e:
-        tqdm.write(f"Request failed: {e}")
-        pass
-    
+        # Extract brief error reason from exception
+        error_type = type(e).__name__
+        error_reason = error_type
+        tqdm.write(f"Request failed: {error_type}")
+
     avg_itl = 0
     if token_count > 1 and status == "SUCCESS":
         avg_itl = (total_latency - ttft) / (token_count - 1)
@@ -88,7 +207,8 @@ async def send_request(session, request_id, model_name, scenario_name):
         "total_latency_ms": total_latency,
         "avg_itl_ms": avg_itl,
         "token_count": token_count,
-        "status": status
+        "status": status,
+        "error_reason": error_reason
     }
 
 async def run_scenario_round_robin(session, results):
@@ -187,6 +307,47 @@ async def run_scenario_bursty(session, results, seed):
             pbar.update(now - last_update_time)
             last_update_time = now
 
+async def run_scenario_rag(session, results, seed):
+    """Scenario 6: RAG Workload (Chatbot:4, VisionProcessor:4, Embedding:2)"""
+    print(f"--- Starting Scenario: RAG Workload with seed {seed} ---")
+
+    # RAG models and their weights
+    # Chatbot (LLM): 4, VisionProcessor (VLM): 4, Embedding: 2
+    rag_models = ["Chatbot", "VisionProcessor", "Embedding"]
+    weights = [4, 4, 2]  # Will be normalized by random.choices
+
+    # Initialize random generators
+    random_gen = random.Random(seed)
+    np_gen = np.random.default_rng(seed)
+
+    start_test = time.time()
+    req_id = 0
+
+    with tqdm(total=TEST_DURATION, desc="RAG Progress", unit="s") as pbar:
+        last_update_time = start_test
+
+        while time.time() - start_test < TEST_DURATION:
+            # Randomly select model based on weights
+            model = random_gen.choices(rag_models, weights=weights, k=1)[0]
+
+            # Get appropriate endpoint and payload for the model type
+            endpoint, payload = get_endpoint_and_payload_for_model(model)
+
+            task = asyncio.create_task(
+                send_request(session, f"RAG-{req_id}", model, "rag", endpoint, payload)
+            )
+            results.append(task)
+            req_id += 1
+
+            # Use Poisson process interval time (closer to real traffic)
+            sleep_time = np_gen.exponential(1.0 / TARGET_RPS)
+            await asyncio.sleep(sleep_time)
+
+            now = time.time()
+            pbar.update(now - last_update_time)
+            last_update_time = now
+
+
 async def run_scenario_single_model(session, results, model_index=0):
     """Scenario 5: Single Model Test (Baseline)"""
     model_name = MODELS[model_index]
@@ -225,7 +386,10 @@ async def run_single_test(session, test_case, seed, model_index=0):
     elif test_case == 5:
         case_name = f"single_model_{MODELS[model_index]}"
         await run_scenario_single_model(session, all_tasks, model_index)
-    
+    elif test_case == 6:
+        case_name = "rag"
+        await run_scenario_rag(session, all_tasks, seed)
+
     print(f"\nAll requests dispatched for {case_name}. Waiting for pending responses...")
     
     responses = []
@@ -239,6 +403,25 @@ async def run_single_test(session, test_case, seed, model_index=0):
     
     print(f"\n=== Quick Summary ({case_name}) ===")
     if not df.empty:
+        # Count failed requests
+        total_requests = len(df)
+        success_count = (df['status'] == 'SUCCESS').sum()
+        failed_count = total_requests - success_count
+
+        print(f"\n--- Request Statistics ---")
+        print(f"Total Requests: {total_requests}")
+        print(f"Success: {success_count} ({success_count/total_requests*100:.1f}%)")
+        print(f"Failed: {failed_count} ({failed_count/total_requests*100:.1f}%)")
+
+        # Show failed breakdown by error reason if there are failures
+        if failed_count > 0:
+            print(f"\n--- Failed Breakdown by Reason ---")
+            failed_df = df[df['status'] == 'FAIL']
+            error_counts = failed_df['error_reason'].value_counts()
+            for reason, count in error_counts.items():
+                print(f"  {reason}: {count}")
+
+        print(f"\n--- Latency Statistics ---")
         print(df.groupby("model")["total_latency_ms"].describe())
     else:
         print("No data collected.")
@@ -252,6 +435,7 @@ async def main(seed):
     print("3. Bursty")
     print("4. Run All (Multi-Model)")
     print("5. Single Model Test")
+    print("6. RAG Workload (LLM:4, VLM:4, Embedding:2)")
     
     try:
         test_case = int(input().strip())
@@ -259,8 +443,8 @@ async def main(seed):
         print("Invalid input")
         return
 
-    if test_case not in [1, 2, 3, 4, 5]:
-        print(f"Please enter option 1, 2, 3, 4, or 5")
+    if test_case not in [1, 2, 3, 4, 5, 6]:
+        print(f"Please enter option 1, 2, 3, 4, 5, or 6")
         return
     
     model_index = 0
@@ -277,7 +461,8 @@ async def main(seed):
             print("Invalid input")
             return
 
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         if test_case == 4:
             scenarios = [1, 2, 3]
             for i, scenario in enumerate(scenarios):
