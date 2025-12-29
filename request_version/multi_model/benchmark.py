@@ -10,6 +10,10 @@ from tqdm import tqdm
 import random
 import string
 
+# vLLM random input generation
+from vllm.benchmarks.datasets import RandomDataset, RandomMultiModalDataset
+from vllm.transformers_utils.tokenizer import get_tokenizer
+
 API_ENDPOINT = "http://localhost:8000/v1/completions"
 MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
 # MODELS =  ['Chatbot', 'Chatbot']
@@ -39,87 +43,233 @@ DEFAULT_ENDPOINTS = {
     "embedding": "http://localhost:8000/v1/embeddings",
 }
 
+# Global random input manager instance (initialized in main)
+random_input_manager = None
 
-def generate_gibberish(total_min=150, total_max=300, sent_len_min=10, sent_len_max=30):
-    """
-    產生由隨機字母組成的假文章。
-    
-    參數:
-    total_min, total_max: 文章總字數的範圍
-    sent_len_min, sent_len_max: 每個句子包含單字數量的範圍
-    """
-    
-    # 1. 決定這篇文章總共要有幾個字
-    target_word_count = random.randint(total_min, total_max)
-    
-    current_word_count = 0
-    sentences = []
 
-    # 2. 迴圈產生句子，直到字數達標
-    while current_word_count < target_word_count:
-        # 決定這個句子要有幾個單字
-        this_sent_len = random.randint(sent_len_min, sent_len_max)
-        
-        # 產生這個句子的所有單字
-        words = []
-        for _ in range(this_sent_len):
-            word_len = random.randint(3, 8) # 單字長度隨機 3~8
-            word = "".join(random.choices(string.ascii_lowercase, k=word_len))
-            words.append(word)
-        
-        # 3. 組合句子：用空白連接 -> 首字大寫 -> 加上句點
-        sentence_str = " ".join(words).capitalize() + "."
-        sentences.append(sentence_str)
-        
-        # 更新目前累積的字數
-        current_word_count += this_sent_len
+class RandomInputManager:
+    """Manages random input generation using vLLM's RandomDataset classes."""
 
-    # 4. 回傳整篇文章
-    return " ".join(sentences)
+    def __init__(self, args, tokenizer):
+        self.args = args
+        self.tokenizer = tokenizer
+
+        # Initialize datasets with seed
+        self.text_dataset = RandomDataset(random_seed=args.seed)
+        self.mm_dataset = RandomMultiModalDataset(random_seed=args.seed)
+
+        # Sample pools
+        self.llm_samples = []
+        self.vlm_samples = []
+        self.embedding_samples = []
+
+        # Index counters for accessing samples
+        self.llm_idx = 0
+        self.vlm_idx = 0
+        self.embedding_idx = 0
+
+    def _calculate_pool_size(self):
+        """Calculate dynamic pool size based on test parameters."""
+        return TEST_DURATION * TARGET_RPS * 4
+
+    def _parse_bucket_config(self, config_str):
+        """Parse bucket config string to dict."""
+        import ast
+        try:
+            return ast.literal_eval(config_str)
+        except:
+            # Fallback to default
+            return {(256, 256, 1): 0.5, (720, 1280, 1): 0.5}
+
+    def generate_sample_pool(self):
+        """Pre-generate sample pools for all model types."""
+        pool_size = self._calculate_pool_size()
+
+        # Generate LLM samples (text only)
+        self.llm_samples = self.text_dataset.sample(
+            tokenizer=self.tokenizer,
+            num_requests=pool_size,
+            input_len=self.args.random_input_len,
+            output_len=self.args.random_output_len,
+            range_ratio=self.args.random_range_ratio,
+            batchsize=1
+        )
+        # Shuffle LLM samples
+        random.shuffle(self.llm_samples)
+
+        # Generate VLM samples (multimodal)
+        bucket_config = self._parse_bucket_config(self.args.random_mm_bucket_config)
+        self.vlm_samples = self.mm_dataset.sample(
+            tokenizer=self.tokenizer,
+            num_requests=pool_size,
+            input_len=self.args.random_input_len,
+            output_len=self.args.random_output_len,
+            range_ratio=self.args.random_range_ratio,
+            base_items_per_request=self.args.random_mm_base_items_per_request,
+            num_mm_items_range_ratio=self.args.random_mm_num_mm_items_range_ratio,
+            bucket_config=bucket_config,
+            limit_mm_per_prompt={"image": 255, "video": 0}
+        )
+        # Shuffle VLM samples
+        random.shuffle(self.vlm_samples)
+
+        # Generate Embedding samples (text only, batchsize=1)
+        self.embedding_samples = self.text_dataset.sample(
+            tokenizer=self.tokenizer,
+            num_requests=pool_size,
+            input_len=self.args.random_input_len,
+            output_len=self.args.random_output_len,
+            range_ratio=self.args.random_range_ratio,
+            batchsize=1
+        )
+        # Shuffle Embedding samples
+        random.shuffle(self.embedding_samples)
+
+    def get_llm_sample(self):
+        """Get next LLM sample (text prompt)."""
+        if not self.llm_samples:
+            return None
+
+        # Get sample at current index
+        sample = self.llm_samples[self.llm_idx % len(self.llm_samples)]
+        self.llm_idx += 1
+
+        # If we've used all samples, reshuffle
+        if self.llm_idx >= len(self.llm_samples):
+            random.shuffle(self.llm_samples)
+            self.llm_idx = 0
+
+        return sample.prompt
+
+    def get_vlm_sample(self):
+        """Get next VLM sample (text prompt + multimodal data)."""
+        if not self.vlm_samples:
+            return None, None
+
+        # Get sample at current index
+        sample = self.vlm_samples[self.vlm_idx % len(self.vlm_samples)]
+        self.vlm_idx += 1
+
+        # If we've used all samples, reshuffle
+        if self.vlm_idx >= len(self.vlm_samples):
+            random.shuffle(self.vlm_samples)
+            self.vlm_idx = 0
+
+        # Return prompt and multimodal data
+        return sample.prompt, sample.multi_modal_data
+
+    def get_embedding_sample(self):
+        """Get next Embedding sample (text input)."""
+        if not self.embedding_samples:
+            return None
+
+        # Get sample at current index
+        sample = self.embedding_samples[self.embedding_idx % len(self.embedding_samples)]
+        self.embedding_idx += 1
+
+        # If we've used all samples, reshuffle
+        if self.embedding_idx >= len(self.embedding_samples):
+            random.shuffle(self.embedding_samples)
+            self.embedding_idx = 0
+
+        return sample.prompt
+
 
 # Default payload generators for different model types
 def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
     """Default payload for LLM (text completion) models"""
+    global random_input_manager
+
+    # Use random input if manager is initialized, otherwise fallback
+    if prompt is None and random_input_manager is not None:
+        prompt = random_input_manager.get_llm_sample()
+    elif prompt is None:
+        prompt = PROMPT_TEXT  # Fallback to original constant
+
+    # Use configured max_tokens from args if available
+    if max_tokens is None and random_input_manager is not None:
+        max_tokens = random_input_manager.args.random_output_len
+    elif max_tokens is None:
+        max_tokens = MAX_TOKENS
+
     return {
         "model": model_name,
-        "prompt": prompt or PROMPT_TEXT,
-        "max_tokens": max_tokens or MAX_TOKENS,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
         "temperature": 0.7,
         "stream": True,
-        "ignore_eos":True
+        "ignore_eos": True
     }
 
 def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
     """Default payload for VLM (vision-language) models"""
+    global random_input_manager
+
+    # Get random multimodal content if manager is initialized
+    if image_url is None and prompt is None and random_input_manager is not None:
+        text_prompt, mm_data = random_input_manager.get_vlm_sample()
+
+        # Build content list with images + text
+        content = []
+
+        # Add all images from multi_modal_data
+        if mm_data and isinstance(mm_data, list):
+            for item in mm_data:
+                if item.get("type") == "image_url":
+                    content.append(item)
+
+        # Add text prompt
+        content.append({
+            "type": "text",
+            "text": text_prompt
+        })
+    else:
+        # Fallback to original behavior
+        content = [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_url or "http://localhost:9000/1.png"
+                }
+            },
+            {
+                "type": "text",
+                "text": prompt or "What is in this image?"
+            }
+        ]
+
+    # Use configured max_tokens from args if available
+    if max_tokens is None and random_input_manager is not None:
+        max_tokens = random_input_manager.args.random_output_len
+    elif max_tokens is None:
+        max_tokens = MAX_TOKENS
+
     return {
         "model": model_name,
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_url or "http://localhost:9000/1.png"
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt or "What is in this image?"
-                    }
-                ]
+                "content": content
             }
         ],
-        "max_tokens": max_tokens or MAX_TOKENS,
+        "max_tokens": max_tokens,
         "temperature": 0.7,
         "stream": True
     }
 
 def get_default_embedding_payload(model_name, input_text=None):
     """Default payload for embedding models"""
+    global random_input_manager
+
+    # Use random input if manager is initialized
+    if input_text is None and random_input_manager is not None:
+        input_text = random_input_manager.get_embedding_sample()
+    elif input_text is None:
+        input_text = PROMPT_TEXT  # Fallback
+
     return {
         "model": model_name,
-        "input": input_text or PROMPT_TEXT,
+        "input": input_text,
         "encoding_format": "float"
     }
 
@@ -137,9 +287,8 @@ def get_endpoint_and_payload_for_model(model_name):
     Returns (endpoint, payload) tuple.
     """
     model_type = MODEL_TYPE_MAP.get(model_name, "llm")
-
     if model_type == "llm":
-        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name,prompt=generate_gibberish())
+        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name)
     elif model_type == "vlm":
         return DEFAULT_ENDPOINTS["vlm"], get_default_vlm_payload(model_name)
     elif model_type == "embedding":
@@ -465,9 +614,36 @@ async def run_single_test(session, test_case, seed, model_index=0):
     else:
         print("No data collected.")
 
-async def main(seed):
+async def main(args):
+    global random_input_manager
+
     print(f"Running in RPS{TARGET_RPS}")
-    print(f"Running in Random Seed: {seed}")
+    print(f"Running in Random Seed: {args.seed}")
+
+    # Initialize tokenizer and random input manager
+    print(f"Loading tokenizer: {args.tokenizer_name}")
+    try:
+        tokenizer = get_tokenizer(
+            args.tokenizer_name,
+            trust_remote_code=args.trust_remote_code
+        )
+
+        print("Initializing random input generator...")
+        random_input_manager = RandomInputManager(args, tokenizer)
+        pool_size = random_input_manager._calculate_pool_size()
+        print(f"Calculated pool size: {pool_size} (TEST_DURATION={TEST_DURATION}s × TARGET_RPS={TARGET_RPS} × 4)")
+        random_input_manager.generate_sample_pool()
+        print(f"Generated sample pools: {len(random_input_manager.llm_samples)} LLM, "
+              f"{len(random_input_manager.vlm_samples)} VLM, "
+              f"{len(random_input_manager.embedding_samples)} Embedding")
+    except Exception as e:
+        print(f"Warning: Failed to initialize random input manager: {e}")
+        print("Falling back to legacy input generation")
+        random_input_manager = None
+
+
+    breakpoint()
+
     print("input test_case number:")
     print("1. Round Robin")
     print("2. Zipfian (Real Distribution)")
@@ -505,16 +681,45 @@ async def main(seed):
         if test_case == 4:
             scenarios = [1, 2, 3]
             for i, scenario in enumerate(scenarios):
-                await run_single_test(session, scenario, seed)
+                await run_single_test(session, scenario, args.seed)
                 if i < len(scenarios) - 1:
                     print("\nWaiting 10 seconds before next test...")
                     await asyncio.sleep(10)
         else:
-            await run_single_test(session, test_case, seed, model_index)
+            await run_single_test(session, test_case, args.seed, model_index)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=42, help="Random seed for experiments")
+
+    # Random input generation arguments
+    parser.add_argument("--random-input-len", type=int, default=500,
+                        help="Number of input tokens for random generation (default: 500)")
+    parser.add_argument("--random-output-len", type=int, default=500,
+                        help="Number of output tokens for random generation (default: 500)")
+    parser.add_argument("--random-range-ratio", type=float, default=0.0,
+                        help="Range ratio for input/output length variability [0.0-1.0]. "
+                             "0.0 = fixed length, 1.0 = max variability (default: 0.0)")
+
+    # Vision model specific arguments
+    parser.add_argument("--random-mm-base-items-per-request", type=int, default=1,
+                        help="number of images per VLM request (default: 1)")
+    parser.add_argument("--random-mm-num-mm-items-range-ratio", type=float, default=0.0,
+                        help="Range ratio for number of images per request (default: 0.0)")
+    parser.add_argument("--random-mm-bucket-config", type=str,
+                        default="{(256,256,1):0.5,(720,1280,1):0.5}",
+                        help="Image bucket config as dict string, e.g., "
+                             "'{(256,256,1):0.5,(720,1280,1):0.5}' for 50%% 256x256 "
+                             "and 50%% 720x1280 images (default: mixed sizes)")
+
+    # Tokenizer arguments
+    parser.add_argument("--tokenizer-name", type=str,
+                        default="meta-llama/Llama-3.1-8B-Instruct",
+                        help="HuggingFace tokenizer name for random input generation "
+                             "(default: meta-llama/Llama-3.1-8B-Instruct)")
+    parser.add_argument("--trust-remote-code", action="store_true",
+                        help="Trust remote code when loading tokenizer")
+
     args = parser.parse_args()
-    
-    asyncio.run(main(args.seed))
+
+    asyncio.run(main(args))
