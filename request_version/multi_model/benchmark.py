@@ -7,25 +7,25 @@ import pandas as pd
 import argparse
 from datetime import datetime
 from tqdm import tqdm
+import random
+import string
 
 API_ENDPOINT = "http://localhost:8000/v1/completions"
 MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
 # MODELS =  ['Chatbot', 'Chatbot']
 
 # Test duration (seconds)
-TEST_DURATION = 60
+TEST_DURATION = 300
 
 # Request timeout (seconds)
-REQUEST_TIMEOUT = 600
+REQUEST_TIMEOUT = 1000
 
 # Base concurrency (Requests Per Second)
-TARGET_RPS = 50
+TARGET_RPS = 4
 
 # Input Prompt (length should be fixed to exclude input length interference, focusing on switching)
 PROMPT_TEXT = "Define the Service Level Objective in one sentence." * 14 # token: 9
-MAX_TOKENS = 64
-
-
+MAX_TOKENS = 300
 
 
 # add params endpoint, payload                                                                                                                                                                                                                 
@@ -39,6 +39,44 @@ DEFAULT_ENDPOINTS = {
     "embedding": "http://localhost:8000/v1/embeddings",
 }
 
+
+def generate_gibberish(total_min=150, total_max=300, sent_len_min=10, sent_len_max=30):
+    """
+    產生由隨機字母組成的假文章。
+    
+    參數:
+    total_min, total_max: 文章總字數的範圍
+    sent_len_min, sent_len_max: 每個句子包含單字數量的範圍
+    """
+    
+    # 1. 決定這篇文章總共要有幾個字
+    target_word_count = random.randint(total_min, total_max)
+    
+    current_word_count = 0
+    sentences = []
+
+    # 2. 迴圈產生句子，直到字數達標
+    while current_word_count < target_word_count:
+        # 決定這個句子要有幾個單字
+        this_sent_len = random.randint(sent_len_min, sent_len_max)
+        
+        # 產生這個句子的所有單字
+        words = []
+        for _ in range(this_sent_len):
+            word_len = random.randint(3, 8) # 單字長度隨機 3~8
+            word = "".join(random.choices(string.ascii_lowercase, k=word_len))
+            words.append(word)
+        
+        # 3. 組合句子：用空白連接 -> 首字大寫 -> 加上句點
+        sentence_str = " ".join(words).capitalize() + "."
+        sentences.append(sentence_str)
+        
+        # 更新目前累積的字數
+        current_word_count += this_sent_len
+
+    # 4. 回傳整篇文章
+    return " ".join(sentences)
+
 # Default payload generators for different model types
 def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
     """Default payload for LLM (text completion) models"""
@@ -47,7 +85,8 @@ def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
         "prompt": prompt or PROMPT_TEXT,
         "max_tokens": max_tokens or MAX_TOKENS,
         "temperature": 0.7,
-        "stream": True
+        "stream": True,
+        "ignore_eos":True
     }
 
 def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
@@ -61,7 +100,7 @@ def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": image_url or "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-702nature-702702702702702702702trail.jpg/1280px-Gfp-wisconsin-madison-the-702nature-702702702702702702702trail.jpg"
+                            "url": image_url or "http://localhost:9000/1.png"
                         }
                     },
                     {
@@ -100,7 +139,7 @@ def get_endpoint_and_payload_for_model(model_name):
     model_type = MODEL_TYPE_MAP.get(model_name, "llm")
 
     if model_type == "llm":
-        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name)
+        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name,prompt=generate_gibberish())
     elif model_type == "vlm":
         return DEFAULT_ENDPOINTS["vlm"], get_default_vlm_payload(model_name)
     elif model_type == "embedding":
@@ -314,7 +353,7 @@ async def run_scenario_rag(session, results, seed):
     # RAG models and their weights
     # Chatbot (LLM): 4, VisionProcessor (VLM): 4, Embedding: 2
     rag_models = ["Chatbot", "VisionProcessor", "Embedding"]
-    weights = [4, 4, 2]  # Will be normalized by random.choices
+    weights = [40, 10, 50]  # Will be normalized by random.choices
 
     # Initialize random generators
     random_gen = random.Random(seed)
@@ -422,7 +461,7 @@ async def run_single_test(session, test_case, seed, model_index=0):
                 print(f"  {reason}: {count}")
 
         print(f"\n--- Latency Statistics ---")
-        print(df.groupby("model")["total_latency_ms"].describe())
+        print(df.groupby("model")["total_latency_ms"].describe([.50,.90,.95,.99]))
     else:
         print("No data collected.")
 
