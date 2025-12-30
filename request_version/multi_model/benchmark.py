@@ -7,35 +7,22 @@ import pandas as pd
 import argparse
 from datetime import datetime
 from tqdm import tqdm
-import random
-import string
 
 # vLLM random input generation
 from vllm.benchmarks.datasets import RandomDataset, RandomMultiModalDataset
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
-API_ENDPOINT = "http://localhost:8000/v1/completions"
 MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
 # MODELS =  ['Chatbot', 'Chatbot']
 
 # Test duration (seconds)
-TEST_DURATION = 300
+TEST_DURATION = 60
 
 # Request timeout (seconds)
-REQUEST_TIMEOUT = 1000
+REQUEST_TIMEOUT = 1500
 
 # Base concurrency (Requests Per Second)
 TARGET_RPS = 4
-
-# Input Prompt (length should be fixed to exclude input length interference, focusing on switching)
-PROMPT_TEXT = "Define the Service Level Objective in one sentence." * 14 # token: 9
-MAX_TOKENS = 300
-
-
-# add params endpoint, payload                                                                                                                                                                                                                 
-# 看 vllm 怎麼 random input 的                                                                                                                                                                                                                 
-# set random int 500 and set min token output                                                                                                                                                                                                  
-# Default endpoints for different model types
 
 DEFAULT_ENDPOINTS = {
     "llm": "http://localhost:8000/v1/completions",
@@ -180,17 +167,13 @@ def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
     """Default payload for LLM (text completion) models"""
     global random_input_manager
 
-    # Use random input if manager is initialized, otherwise fallback
-    if prompt is None and random_input_manager is not None:
+    # Use random input from manager
+    if prompt is None:
         prompt = random_input_manager.get_llm_sample()
-    elif prompt is None:
-        prompt = PROMPT_TEXT  # Fallback to original constant
 
-    # Use configured max_tokens from args if available
-    if max_tokens is None and random_input_manager is not None:
+    # Use configured max_tokens from args
+    if max_tokens is None:
         max_tokens = random_input_manager.args.random_output_len
-    elif max_tokens is None:
-        max_tokens = MAX_TOKENS
 
     return {
         "model": model_name,
@@ -205,8 +188,8 @@ def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=
     """Default payload for VLM (vision-language) models"""
     global random_input_manager
 
-    # Get random multimodal content if manager is initialized
-    if image_url is None and prompt is None and random_input_manager is not None:
+    # Get random multimodal content from manager
+    if image_url is None and prompt is None:
         text_prompt, mm_data = random_input_manager.get_vlm_sample()
 
         # Build content list with images + text
@@ -224,25 +207,23 @@ def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=
             "text": text_prompt
         })
     else:
-        # Fallback to original behavior
+        # Use provided parameters
         content = [
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": image_url or "http://localhost:9000/1.png"
+                    "url": image_url
                 }
             },
             {
                 "type": "text",
-                "text": prompt or "What is in this image?"
+                "text": prompt
             }
         ]
 
-    # Use configured max_tokens from args if available
-    if max_tokens is None and random_input_manager is not None:
+    # Use configured max_tokens from args
+    if max_tokens is None:
         max_tokens = random_input_manager.args.random_output_len
-    elif max_tokens is None:
-        max_tokens = MAX_TOKENS
 
     return {
         "model": model_name,
@@ -261,11 +242,9 @@ def get_default_embedding_payload(model_name, input_text=None):
     """Default payload for embedding models"""
     global random_input_manager
 
-    # Use random input if manager is initialized
-    if input_text is None and random_input_manager is not None:
+    # Use random input from manager
+    if input_text is None:
         input_text = random_input_manager.get_embedding_sample()
-    elif input_text is None:
-        input_text = PROMPT_TEXT  # Fallback
 
     return {
         "model": model_name,
@@ -307,14 +286,14 @@ async def send_request(session, request_id, model_name, scenario_name, endpoint=
         request_id: Unique identifier for the request
         model_name: Name of the model to use
         scenario_name: Name of the test scenario
-        endpoint: Custom endpoint URL (defaults to API_ENDPOINT if None)
-        payload: Custom payload dict (defaults to LLM payload if None)
+        endpoint: Custom endpoint URL (uses get_endpoint_and_payload_for_model if None)
+        payload: Custom payload dict (uses get_endpoint_and_payload_for_model if None)
     """
-    url = endpoint if endpoint is not None else API_ENDPOINT
+    # Get endpoint and payload if not provided
+    if endpoint is None or payload is None:
+        endpoint, payload = get_endpoint_and_payload_for_model(model_name)
 
-    # Use custom payload if provided, otherwise use default LLM payload
-    if payload is None:
-        payload = get_default_llm_payload(model_name)
+    url = endpoint
 
     # Check if this is a streaming request
     is_streaming = payload.get("stream", False)
@@ -642,8 +621,6 @@ async def main(args):
         random_input_manager = None
 
 
-    breakpoint()
-
     print("input test_case number:")
     print("1. Round Robin")
     print("2. Zipfian (Real Distribution)")
@@ -714,9 +691,9 @@ if __name__ == "__main__":
 
     # Tokenizer arguments
     parser.add_argument("--tokenizer-name", type=str,
-                        default="meta-llama/Llama-3.1-8B-Instruct",
+                        default="Qwen/Qwen3-0.6B",
                         help="HuggingFace tokenizer name for random input generation "
-                             "(default: meta-llama/Llama-3.1-8B-Instruct)")
+                             "(default: Qwen/Qwen3-0.6B)")
     parser.add_argument("--trust-remote-code", action="store_true",
                         help="Trust remote code when loading tokenizer")
 
