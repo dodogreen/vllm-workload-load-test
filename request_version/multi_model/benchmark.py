@@ -13,7 +13,6 @@ from vllm.benchmarks.datasets import RandomDataset, RandomMultiModalDataset
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
 MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
-# MODELS =  ['Chatbot', 'Chatbot']
 
 # Test duration (seconds)
 TEST_DURATION = 60
@@ -24,7 +23,7 @@ REQUEST_TIMEOUT = 1500
 # Base concurrency (Requests Per Second)
 TARGET_RPS = 4
 
-DEFAULT_ENDPOINTS = {
+MODEL_TYPE_ENDPOINTS = {
     "llm": "http://localhost:8000/v1/completions",
     "vlm": "http://localhost:8000/v1/chat/completions",
     "embedding": "http://localhost:8000/v1/embeddings",
@@ -57,15 +56,16 @@ class RandomInputManager:
 
     def _calculate_pool_size(self):
         """Calculate dynamic pool size based on test parameters."""
-        return TEST_DURATION * TARGET_RPS * 4
+        return TEST_DURATION * TARGET_RPS * 1
 
     def _parse_bucket_config(self, config_str):
         """Parse bucket config string to dict."""
         import ast
         try:
             return ast.literal_eval(config_str)
-        except:
-            # Fallback to default
+        except (ValueError, SyntaxError) as e:
+            # Fallback to default on parsing error
+            print(f"Warning: Failed to parse bucket config '{config_str}': {e}. Using default config.")
             return {(256, 256, 1): 0.5, (720, 1280, 1): 0.5}
 
     def generate_sample_pool(self):
@@ -117,11 +117,9 @@ class RandomInputManager:
         if not self.llm_samples:
             return None
 
-        # Get sample at current index
-        sample = self.llm_samples[self.llm_idx % len(self.llm_samples)]
+        sample = self.llm_samples[self.llm_idx]
         self.llm_idx += 1
 
-        # If we've used all samples, reshuffle
         if self.llm_idx >= len(self.llm_samples):
             random.shuffle(self.llm_samples)
             self.llm_idx = 0
@@ -133,16 +131,13 @@ class RandomInputManager:
         if not self.vlm_samples:
             return None, None
 
-        # Get sample at current index
-        sample = self.vlm_samples[self.vlm_idx % len(self.vlm_samples)]
+        sample = self.vlm_samples[self.vlm_idx]
         self.vlm_idx += 1
 
-        # If we've used all samples, reshuffle
         if self.vlm_idx >= len(self.vlm_samples):
             random.shuffle(self.vlm_samples)
             self.vlm_idx = 0
 
-        # Return prompt and multimodal data
         return sample.prompt, sample.multi_modal_data
 
     def get_embedding_sample(self):
@@ -150,11 +145,9 @@ class RandomInputManager:
         if not self.embedding_samples:
             return None
 
-        # Get sample at current index
-        sample = self.embedding_samples[self.embedding_idx % len(self.embedding_samples)]
+        sample = self.embedding_samples[self.embedding_idx]
         self.embedding_idx += 1
 
-        # If we've used all samples, reshuffle
         if self.embedding_idx >= len(self.embedding_samples):
             random.shuffle(self.embedding_samples)
             self.embedding_idx = 0
@@ -162,9 +155,9 @@ class RandomInputManager:
         return sample.prompt
 
 
-# Default payload generators for different model types
-def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
-    """Default payload for LLM (text completion) models"""
+# Payload builders for different model types
+def build_llm_payload(model_name, prompt=None, max_tokens=None):
+    """Build payload for LLM (text completion) models"""
     global random_input_manager
 
     # Use random input from manager
@@ -184,8 +177,8 @@ def get_default_llm_payload(model_name, prompt=None, max_tokens=None):
         "ignore_eos": True
     }
 
-def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
-    """Default payload for VLM (vision-language) models"""
+def build_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
+    """Build payload for VLM (vision-language) models"""
     global random_input_manager
 
     # Get random multimodal content from manager
@@ -238,8 +231,8 @@ def get_default_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=
         "stream": True
     }
 
-def get_default_embedding_payload(model_name, input_text=None):
-    """Default payload for embedding models"""
+def build_embedding_payload(model_name, input_text=None):
+    """Build payload for embedding models"""
     global random_input_manager
 
     # Use random input from manager
@@ -264,17 +257,23 @@ def get_endpoint_and_payload_for_model(model_name):
     """
     Get the appropriate endpoint and payload based on model name.
     Returns (endpoint, payload) tuple.
+
+    Raises:
+        ValueError: If model_name is not found in MODEL_TYPE_MAP
     """
-    model_type = MODEL_TYPE_MAP.get(model_name, "llm")
+    if model_name not in MODEL_TYPE_MAP:
+        raise ValueError(f"Unknown model name: {model_name}. Valid models: {list(MODEL_TYPE_MAP.keys())}")
+
+    model_type = MODEL_TYPE_MAP[model_name]
+
     if model_type == "llm":
-        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name)
+        return MODEL_TYPE_ENDPOINTS["llm"], build_llm_payload(model_name)
     elif model_type == "vlm":
-        return DEFAULT_ENDPOINTS["vlm"], get_default_vlm_payload(model_name)
+        return MODEL_TYPE_ENDPOINTS["vlm"], build_vlm_payload(model_name)
     elif model_type == "embedding":
-        return DEFAULT_ENDPOINTS["embedding"], get_default_embedding_payload(model_name)
+        return MODEL_TYPE_ENDPOINTS["embedding"], build_embedding_payload(model_name)
     else:
-        # Default to LLM
-        return DEFAULT_ENDPOINTS["llm"], get_default_llm_payload(model_name)
+        raise ValueError(f"Unknown model type: {model_type} for model: {model_name}")
 
 
 async def send_request(session, request_id, model_name, scenario_name, endpoint=None, payload=None):
