@@ -81,7 +81,6 @@ class RandomInputManager:
             range_ratio=self.args.random_range_ratio,
             batchsize=1
         )
-        # Shuffle LLM samples
         random.shuffle(self.llm_samples)
 
         # Generate VLM samples (multimodal)
@@ -97,7 +96,6 @@ class RandomInputManager:
             bucket_config=bucket_config,
             limit_mm_per_prompt={"image": 255, "video": 0}
         )
-        # Shuffle VLM samples
         random.shuffle(self.vlm_samples)
 
         # Generate Embedding samples (text only, batchsize=1)
@@ -109,7 +107,6 @@ class RandomInputManager:
             range_ratio=self.args.random_range_ratio,
             batchsize=1
         )
-        # Shuffle Embedding samples
         random.shuffle(self.embedding_samples)
 
     def get_llm_sample(self):
@@ -618,7 +615,6 @@ async def main(args):
         print(f"Warning: Failed to initialize random input manager: {e}")
         print("Falling back to legacy input generation")
         random_input_manager = None
-
 
     print("input test_case number:")
     print("1. Round Robin")
