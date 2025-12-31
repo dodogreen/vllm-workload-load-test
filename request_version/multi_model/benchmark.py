@@ -15,18 +15,18 @@ from vllm.transformers_utils.tokenizer import get_tokenizer
 MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
 
 # Test duration (seconds)
-TEST_DURATION = 60
+TEST_DURATION = 3
 
 # Request timeout (seconds)
-REQUEST_TIMEOUT = 1500
+REQUEST_TIMEOUT = 2000
 
 # Base concurrency (Requests Per Second)
 TARGET_RPS = 4
 
 MODEL_TYPE_ENDPOINTS = {
-    "llm": "http://localhost:8000/v1/completions",
-    "vlm": "http://localhost:8000/v1/chat/completions",
-    "embedding": "http://localhost:8000/v1/embeddings",
+    "llm": "http://0.0.0.0:8000/v1/completions",
+    "vlm": "http://0.0.0.0:8000/v1/chat/completions",
+    "embedding": "http://0.0.0.0:8000/v1/embeddings",
 }
 
 # Global random input manager instance (initialized in main)
@@ -225,7 +225,8 @@ def build_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
         ],
         "max_tokens": max_tokens,
         "temperature": 0.7,
-        "stream": True
+        "stream": True,
+        "ignore_eos": True
     }
 
 def build_embedding_payload(model_name, input_text=None):
@@ -659,6 +660,8 @@ async def main(args):
                     await asyncio.sleep(10)
         else:
             await run_single_test(session, test_case, args.seed, model_index)
+
+# 寫一個設定檔案，有多個模型 model type, ration, input len, output len 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
