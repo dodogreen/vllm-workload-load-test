@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.ticker import MultipleLocator, MaxNLocator
 import numpy as np
+import glob
+import os
 
 TARGET_TTFT=5000 # ms
 
@@ -38,33 +40,71 @@ def get_smart_interval(data_range, target_ticks=10):
 
     return nice_interval
 
+def find_all_result_files(case):
+    """Find all benchmark result files for a given case/scenario.
+
+    Supports both old format (benchmark_results_{case}.csv) and
+    new format (benchmark_results_{case}_{timestamp}.csv)
+
+    Args:
+        case: The scenario name (e.g., 'round_robin', 'zipfian', etc.)
+
+    Returns:
+        List of (file_path, output_name) tuples, sorted by modification time
+    """
+    result_files = []
+
+    # Find new format files (with timestamp)
+    pattern = f"benchmark_results_{case}_*.csv"
+    matching_files = glob.glob(pattern)
+
+    for file_path in matching_files:
+        # Extract base name without .csv extension for output
+        output_name = os.path.splitext(file_path)[0]
+        result_files.append((file_path, output_name))
+
+    # Check for old format file (without timestamp)
+    old_format_file = f"benchmark_results_{case}.csv"
+    if os.path.exists(old_format_file):
+        output_name = f"benchmark_results_{case}"
+        result_files.append((old_format_file, output_name))
+
+    # Sort by modification time (newest first)
+    result_files.sort(key=lambda x: os.path.getmtime(x[0]), reverse=True)
+
+    return result_files
+
 # Read data
 cases = ["round_robin", "zipfian", "bursty", "rag"]
-dfs = {}
+file_data_list = []  # List of (case, file_path, output_name, df)
 all_models = set()
 
-# Step 1: Read all data to determine all appearing models
+# Step 1: Find and read all result files
 for case in cases:
-    file_name = f"benchmark_results_{case}"
-    try:
-        df = pd.read_csv(f'{file_name}.csv')
-        # Preprocessing: Normalize start time to start from 0
-        df['relative_start_time'] = df['start_time'] - df['start_time'].min()
-        dfs[case] = df
-        all_models.update(df['model'].unique())
-    except FileNotFoundError:
-        print(f"Warning: {file_name}.csv not found")
+    result_files = find_all_result_files(case)
+
+    if not result_files:
+        print(f"Warning: No result file found for case '{case}'")
+        continue
+
+    for file_path, output_name in result_files:
+        try:
+            print(f"Loading: {file_path}")
+            df = pd.read_csv(file_path)
+            # Preprocessing: Normalize start time to start from 0
+            df['relative_start_time'] = df['start_time'] - df['start_time'].min()
+            file_data_list.append((case, file_path, output_name, df))
+            all_models.update(df['model'].unique())
+        except Exception as e:
+            print(f"Error reading {file_path}: {e}")
 
 # Set unified colors and order
 unique_models = sorted(list(all_models))
 palette = dict(zip(unique_models, sns.color_palette("tab10", len(unique_models))))
 
-for case in cases:
-    if case not in dfs:
-        continue
-        
-    df = dfs[case]
-    file_name = f"benchmark_results_{case}"
+# Step 2: Generate plots for each file
+for case, file_path, output_name, df in file_data_list:
+    print(f"\nGenerating plot for: {file_path}")
 
     # Set up canvas
     fig, axes = plt.subplots(2, 2, figsize=(18, 12))
@@ -140,6 +180,6 @@ for case in cases:
 
     plt.tight_layout()
     # plt.show()
-    print(f"save figure {file_name}.png")
-    plt.savefig(f'{file_name}.png')
+    print(f"Saving figure: {output_name}.png")
+    plt.savefig(f'{output_name}.png')
     plt.close()
