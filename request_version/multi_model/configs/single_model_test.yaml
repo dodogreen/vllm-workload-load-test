@@ -1,0 +1,38 @@
+# Single model test configuration
+test_duration: 60
+target_rps: 4
+request_timeout: 2000
+seed: 42
+
+tokenizer:
+  name: "Qwen/Qwen3-0.6B"
+  trust_remote_code: false
+
+# 注意：Single Model scenario 只能有一個模型
+models:
+  - name: "Chatbot"
+    type: "llm"
+    endpoint: "http://0.0.0.0:8000/v1/completions"
+    input_len: 500
+    output_len: 500
+    temperature: 0.7
+    stream: true
+    ignore_eos: true
+
+scenarios:
+  round_robin:
+    enabled: false
+
+  zipfian:
+    enabled: false
+    weights: [1.0]
+
+  bursty:
+    enabled: false
+
+  single_model:
+    enabled: true  # 只測試單一模型
+
+  rag:
+    enabled: false
+    weights: [100]

@@ -15,26 +15,6 @@ from vllm.transformers_utils.tokenizer import get_tokenizer
 # Configuration classes
 from config import BenchmarkConfig, ModelConfig, ScenarioConfig
 
-MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
-
-# Test duration (seconds)
-TEST_DURATION = 3
-
-# Request timeout (seconds)
-REQUEST_TIMEOUT = 2000
-
-# Base concurrency (Requests Per Second)
-TARGET_RPS = 4
-
-MODEL_TYPE_ENDPOINTS = {
-    "llm": "http://0.0.0.0:8000/v1/completions",
-    "vlm": "http://0.0.0.0:8000/v1/chat/completions",
-    "embedding": "http://0.0.0.0:8000/v1/embeddings",
-}
-
-# Global random input manager instance (initialized in main)
-random_input_manager = None
-
 
 class RandomInputManager:
     """Manages random input generation using vLLM's RandomDataset classes."""
@@ -150,169 +130,74 @@ class RandomInputManager:
         else:  # llm or embedding
             return sample.prompt
 
-    def get_llm_sample(self):
-        """Get next LLM sample (text prompt)."""
-        if not self.llm_samples:
-            return None
-
-        sample = self.llm_samples[self.llm_idx]
-        self.llm_idx += 1
-
-        if self.llm_idx >= len(self.llm_samples):
-            random.shuffle(self.llm_samples)
-            self.llm_idx = 0
-
-        return sample.prompt
-
-    def get_vlm_sample(self):
-        """Get next VLM sample (text prompt + multimodal data)."""
-        if not self.vlm_samples:
-            return None, None
-
-        sample = self.vlm_samples[self.vlm_idx]
-        self.vlm_idx += 1
-
-        if self.vlm_idx >= len(self.vlm_samples):
-            random.shuffle(self.vlm_samples)
-            self.vlm_idx = 0
-
-        return sample.prompt, sample.multi_modal_data
-
-    def get_embedding_sample(self):
-        """Get next Embedding sample (text input)."""
-        if not self.embedding_samples:
-            return None
-
-        sample = self.embedding_samples[self.embedding_idx]
-        self.embedding_idx += 1
-
-        if self.embedding_idx >= len(self.embedding_samples):
-            random.shuffle(self.embedding_samples)
-            self.embedding_idx = 0
-
-        return sample.prompt
-
 
 # Payload builders for different model types
-def build_llm_payload(model_name, prompt=None, max_tokens=None):
-    """Build payload for LLM (text completion) models"""
-    global random_input_manager
-
-    # Use random input from manager
-    if prompt is None:
-        prompt = random_input_manager.get_llm_sample()
-
-    # Use configured max_tokens from args
-    if max_tokens is None:
-        max_tokens = random_input_manager.args.random_output_len
-
+def build_llm_payload(model_config: ModelConfig, prompt: str):
+    """Build payload for LLM models using model-specific config"""
     return {
-        "model": model_name,
+        "model": model_config.name,
         "prompt": prompt,
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-        "stream": True,
-        "ignore_eos": True
+        "max_tokens": model_config.output_len,
+        "temperature": model_config.temperature,
+        "stream": model_config.stream,
+        "ignore_eos": model_config.ignore_eos,
+        **model_config.extra_params
     }
 
-def build_vlm_payload(model_name, image_url=None, prompt=None, max_tokens=None):
-    """Build payload for VLM (vision-language) models"""
-    global random_input_manager
+def build_vlm_payload(model_config: ModelConfig, prompt: str, mm_data: dict):
+    """Build payload for VLM models using model-specific config"""
+    content = []
 
-    # Get random multimodal content from manager
-    if image_url is None and prompt is None:
-        text_prompt, mm_data = random_input_manager.get_vlm_sample()
+    # Add all images from multi_modal_data
+    if mm_data and isinstance(mm_data, list):
+        for item in mm_data:
+            if item.get("type") == "image_url":
+                content.append(item)
 
-        # Build content list with images + text
-        content = []
-
-        # Add all images from multi_modal_data
-        if mm_data and isinstance(mm_data, list):
-            for item in mm_data:
-                if item.get("type") == "image_url":
-                    content.append(item)
-
-        # Add text prompt
-        content.append({
-            "type": "text",
-            "text": text_prompt
-        })
-    else:
-        # Use provided parameters
-        content = [
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": image_url
-                }
-            },
-            {
-                "type": "text",
-                "text": prompt
-            }
-        ]
-
-    # Use configured max_tokens from args
-    if max_tokens is None:
-        max_tokens = random_input_manager.args.random_output_len
+    # Add text prompt
+    content.append({"type": "text", "text": prompt})
 
     return {
-        "model": model_name,
-        "messages": [
-            {
-                "role": "user",
-                "content": content
-            }
-        ],
-        "max_tokens": max_tokens,
-        "temperature": 0.7,
-        "stream": True,
-        "ignore_eos": True
+        "model": model_config.name,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": model_config.output_len,
+        "temperature": model_config.temperature,
+        "stream": model_config.stream,
+        "ignore_eos": model_config.ignore_eos,
+        **model_config.extra_params
     }
 
-def build_embedding_payload(model_name, input_text=None):
-    """Build payload for embedding models"""
-    global random_input_manager
-
-    # Use random input from manager
-    if input_text is None:
-        input_text = random_input_manager.get_embedding_sample()
-
+def build_embedding_payload(model_config: ModelConfig, input_text: str):
+    """Build payload for embedding models using model-specific config"""
     return {
-        "model": model_name,
+        "model": model_config.name,
         "input": input_text,
-        "encoding_format": "float"
+        "encoding_format": model_config.encoding_format,
+        **model_config.extra_params
     }
 
 
-# Model type mapping for RAG scenario
-MODEL_TYPE_MAP = {
-    "Chatbot": "llm",
-    "VisionProcessor": "vlm",
-    "Embedding": "embedding",
-}
+def get_endpoint_and_payload_for_model(model_name: str, config: BenchmarkConfig,
+                                        random_input_manager: RandomInputManager):
+    """Get endpoint and payload based on model name from config"""
+    if model_name not in config.model_map:
+        raise ValueError(f"Unknown model: {model_name}. Valid models: {list(config.model_map.keys())}")
 
-def get_endpoint_and_payload_for_model(model_name):
-    """
-    Get the appropriate endpoint and payload based on model name.
-    Returns (endpoint, payload) tuple.
+    model_config = config.model_map[model_name]
 
-    Raises:
-        ValueError: If model_name is not found in MODEL_TYPE_MAP
-    """
-    if model_name not in MODEL_TYPE_MAP:
-        raise ValueError(f"Unknown model name: {model_name}. Valid models: {list(MODEL_TYPE_MAP.keys())}")
-
-    model_type = MODEL_TYPE_MAP[model_name]
-
-    if model_type == "llm":
-        return MODEL_TYPE_ENDPOINTS["llm"], build_llm_payload(model_name)
-    elif model_type == "vlm":
-        return MODEL_TYPE_ENDPOINTS["vlm"], build_vlm_payload(model_name)
-    elif model_type == "embedding":
-        return MODEL_TYPE_ENDPOINTS["embedding"], build_embedding_payload(model_name)
+    if model_config.type == "llm":
+        prompt = random_input_manager.get_sample(model_name)
+        payload = build_llm_payload(model_config, prompt)
+    elif model_config.type == "vlm":
+        prompt, mm_data = random_input_manager.get_sample(model_name)
+        payload = build_vlm_payload(model_config, prompt, mm_data)
+    elif model_config.type == "embedding":
+        prompt = random_input_manager.get_sample(model_name)
+        payload = build_embedding_payload(model_config, prompt)
     else:
-        raise ValueError(f"Unknown model type: {model_type} for model: {model_name}")
+        raise ValueError(f"Unknown model type: {model_config.type} for model: {model_name}")
+
+    return model_config.endpoint, payload
 
 
 async def send_request(session, request_id, model_name, scenario_name, endpoint=None, payload=None):
@@ -416,136 +301,175 @@ async def send_request(session, request_id, model_name, scenario_name, endpoint=
         "error_reason": error_reason
     }
 
-async def run_scenario_round_robin(session, results):
+async def run_scenario_round_robin(session, results, config: BenchmarkConfig,
+                                    random_input_manager: RandomInputManager):
     """Scenario 1: Extreme Switching (Round Robin)"""
     print(f"--- Starting Scenario: Round Robin (Worst Case) ---")
     start_test = time.time()
     req_id = 0
-    
-    # Use tqdm to create a progress bar, total amount is test seconds
-    with tqdm(total=TEST_DURATION, desc="Round Robin Progress", unit="s") as pbar:
-        last_update_time = start_test
-        
-        while time.time() - start_test < TEST_DURATION:
-            model = MODELS[req_id % len(MODELS)]
-            task = asyncio.create_task(send_request(session, f"RR-{req_id}", model, "round_robin"))
-            results.append(task)
-            req_id += 1
-            
-            await asyncio.sleep(1.0 / TARGET_RPS)
-            
-            now = time.time()
-            pbar.update(now - last_update_time)
-            last_update_time = now
 
-async def run_scenario_zipfian(session, results, seed):
-    """Scenario 2: Real Distribution (Zipfian / Weighted)"""
-    print(f"--- Starting Scenario: Zipfian (Real World) with seed {seed} ---")
-    # Set weights: First model 80%, the rest share the remaining 20%
-    weights = [0.8] + [(0.2 / (len(MODELS)-1))] * (len(MODELS)-1)
-    
-    # Initialize random generators
-    random_gen = random.Random(seed)
-    np_gen = np.random.default_rng(seed)
+    # Get model list from config
+    models = [m.name for m in config.models]
 
-    start_test = time.time()
-    req_id = 0
-    
-    with tqdm(total=TEST_DURATION, desc="Zipfian Progress", unit="s") as pbar:
-        last_update_time = start_test
-        
-        while time.time() - start_test < TEST_DURATION:
-            # Randomly select based on weights
-            model = random_gen.choices(MODELS, weights=weights, k=1)[0]
-            task = asyncio.create_task(send_request(session, f"ZIPF-{req_id}", model, "zipfian"))
-            results.append(task)
-            req_id += 1
-            # Use Poisson process interval time (closer to real traffic)
-            sleep_time = np_gen.exponential(1.0 / TARGET_RPS)
-            await asyncio.sleep(sleep_time)
-            
-            now = time.time()
-            pbar.update(now - last_update_time)
-            last_update_time = now
-
-async def run_scenario_bursty(session, results, seed):
-    """Scenario 3: Bursty Traffic (Bursty)"""
-    print(f"--- Starting Scenario: Bursty (Stress Test) with seed {seed} ---")
-    
-    # Initialize random generator
-    random_gen = random.Random(seed)
-
-    start_test = time.time()
-    req_id = 0
-    
-    with tqdm(total=TEST_DURATION, desc="Bursty Progress", unit="s") as pbar:
-        last_update_time = start_test
-        
-        while time.time() - start_test < TEST_DURATION:
-            current_elapsed = time.time() - start_test
-            
-            # Generate burst traffic every 10 seconds
-            if int(current_elapsed) % 10 == 0 and int(current_elapsed) > 0:
-                # Use tqdm.write to print logs to avoid progress bar confusion
-                tqdm.write(f"!!! BURST INCOMING at {int(current_elapsed)}s !!!")
-                
-                burst_size = 10  # Inject 10 requests at once
-                # Bursty traffic is usually mixed, here randomly mixed
-                burst_models = random_gen.choices(MODELS, k=burst_size)
-                
-                for model in burst_models:
-                    task = asyncio.create_task(send_request(session, f"BURST-{req_id}", model, "bursty"))
-                    results.append(task)
-                    req_id += 1
-                
-                # Rest a bit after burst to avoid instant overload causing Client crash
-                await asyncio.sleep(1) 
-            else:
-                # Background traffic (low load)
-                model = random_gen.choice(MODELS)
-                task = asyncio.create_task(send_request(session, f"BG-{req_id}", model, "bursty"))
-                results.append(task)
-                req_id += 1
-                await asyncio.sleep(1.0 / (TARGET_RPS / 2)) # Background traffic set to half of the target
-            
-            now = time.time()
-            pbar.update(now - last_update_time)
-            last_update_time = now
-
-async def run_scenario_rag(session, results, seed):
-    """Scenario 6: RAG Workload (Chatbot:4, VisionProcessor:4, Embedding:2)"""
-    print(f"--- Starting Scenario: RAG Workload with seed {seed} ---")
-
-    # RAG models and their weights
-    # Chatbot (LLM): 4, VisionProcessor (VLM): 4, Embedding: 2
-    rag_models = ["Chatbot", "VisionProcessor", "Embedding"]
-    weights = [40, 10, 50]  # Will be normalized by random.choices
-
-    # Initialize random generators
-    random_gen = random.Random(seed)
-    np_gen = np.random.default_rng(seed)
-
-    start_test = time.time()
-    req_id = 0
-
-    with tqdm(total=TEST_DURATION, desc="RAG Progress", unit="s") as pbar:
+    with tqdm(total=config.test_duration, desc="Round Robin Progress", unit="s") as pbar:
         last_update_time = start_test
 
-        while time.time() - start_test < TEST_DURATION:
-            # Randomly select model based on weights
-            model = random_gen.choices(rag_models, weights=weights, k=1)[0]
+        while time.time() - start_test < config.test_duration:
+            model_name = models[req_id % len(models)]
 
-            # Get appropriate endpoint and payload for the model type
-            endpoint, payload = get_endpoint_and_payload_for_model(model)
+            # Get endpoint and payload using config
+            endpoint, payload = get_endpoint_and_payload_for_model(model_name, config, random_input_manager)
 
             task = asyncio.create_task(
-                send_request(session, f"RAG-{req_id}", model, "rag", endpoint, payload)
+                send_request(session, f"RR-{req_id}", model_name, "round_robin", endpoint, payload)
             )
             results.append(task)
             req_id += 1
 
-            # Use Poisson process interval time (closer to real traffic)
-            sleep_time = np_gen.exponential(1.0 / TARGET_RPS)
+            await asyncio.sleep(1.0 / config.target_rps)
+
+            now = time.time()
+            pbar.update(now - last_update_time)
+            last_update_time = now
+
+async def run_scenario_zipfian(session, results, config: BenchmarkConfig,
+                                random_input_manager: RandomInputManager):
+    """Scenario 2: Real Distribution (Zipfian / Weighted)"""
+    print(f"--- Starting Scenario: Zipfian (Real World) with seed {config.seed} ---")
+
+    # Get models and weights from config
+    models = [m.name for m in config.models]
+    weights = config.scenarios.zipfian_weights
+
+    # Validate weights length
+    if len(weights) != len(models):
+        raise ValueError(f"Zipfian weights length ({len(weights)}) must match number of models ({len(models)})")
+
+    # Initialize random generators
+    random_gen = random.Random(config.seed)
+    np_gen = np.random.default_rng(config.seed)
+
+    start_test = time.time()
+    req_id = 0
+
+    with tqdm(total=config.test_duration, desc="Zipfian Progress", unit="s") as pbar:
+        last_update_time = start_test
+
+        while time.time() - start_test < config.test_duration:
+            # Randomly select based on weights
+            model_name = random_gen.choices(models, weights=weights, k=1)[0]
+
+            # Get endpoint and payload using config
+            endpoint, payload = get_endpoint_and_payload_for_model(model_name, config, random_input_manager)
+
+            task = asyncio.create_task(
+                send_request(session, f"ZIPF-{req_id}", model_name, "zipfian", endpoint, payload)
+            )
+            results.append(task)
+            req_id += 1
+
+            # Use Poisson process interval time
+            sleep_time = np_gen.exponential(1.0 / config.target_rps)
+            await asyncio.sleep(sleep_time)
+
+            now = time.time()
+            pbar.update(now - last_update_time)
+            last_update_time = now
+
+async def run_scenario_bursty(session, results, config: BenchmarkConfig,
+                               random_input_manager: RandomInputManager):
+    """Scenario 3: Bursty Traffic (Bursty)"""
+    print(f"--- Starting Scenario: Bursty (Stress Test) with seed {config.seed} ---")
+
+    # Get models from config
+    models = [m.name for m in config.models]
+
+    # Get bursty parameters from config
+    burst_interval = config.scenarios.burst_interval
+    burst_size = config.scenarios.burst_size
+    background_rps = config.target_rps * config.scenarios.bursty_background_rps_ratio
+
+    # Initialize random generator
+    random_gen = random.Random(config.seed)
+
+    start_test = time.time()
+    req_id = 0
+
+    with tqdm(total=config.test_duration, desc="Bursty Progress", unit="s") as pbar:
+        last_update_time = start_test
+
+        while time.time() - start_test < config.test_duration:
+            current_elapsed = time.time() - start_test
+
+            # Generate burst traffic at configured interval
+            if int(current_elapsed) % burst_interval == 0 and int(current_elapsed) > 0:
+                tqdm.write(f"!!! BURST INCOMING at {int(current_elapsed)}s !!!")
+
+                # Bursty traffic is mixed
+                burst_models = random_gen.choices(models, k=burst_size)
+
+                for model_name in burst_models:
+                    endpoint, payload = get_endpoint_and_payload_for_model(model_name, config, random_input_manager)
+                    task = asyncio.create_task(
+                        send_request(session, f"BURST-{req_id}", model_name, "bursty", endpoint, payload)
+                    )
+                    results.append(task)
+                    req_id += 1
+
+                await asyncio.sleep(1)
+            else:
+                # Background traffic
+                model_name = random_gen.choice(models)
+                endpoint, payload = get_endpoint_and_payload_for_model(model_name, config, random_input_manager)
+                task = asyncio.create_task(
+                    send_request(session, f"BG-{req_id}", model_name, "bursty", endpoint, payload)
+                )
+                results.append(task)
+                req_id += 1
+                await asyncio.sleep(1.0 / background_rps)
+
+            now = time.time()
+            pbar.update(now - last_update_time)
+            last_update_time = now
+
+async def run_scenario_rag(session, results, config: BenchmarkConfig,
+                            random_input_manager: RandomInputManager):
+    """Scenario 6: RAG Workload"""
+    print(f"--- Starting Scenario: RAG Workload with seed {config.seed} ---")
+
+    # Get RAG models and weights from config
+    models = [m.name for m in config.models]
+    weights = config.scenarios.rag_weights
+
+    # Validate weights length
+    if len(weights) != len(models):
+        raise ValueError(f"RAG weights length ({len(weights)}) must match number of models ({len(models)})")
+
+    # Initialize random generators
+    random_gen = random.Random(config.seed)
+    np_gen = np.random.default_rng(config.seed)
+
+    start_test = time.time()
+    req_id = 0
+
+    with tqdm(total=config.test_duration, desc="RAG Progress", unit="s") as pbar:
+        last_update_time = start_test
+
+        while time.time() - start_test < config.test_duration:
+            # Randomly select model based on weights
+            model_name = random_gen.choices(models, weights=weights, k=1)[0]
+
+            # Get appropriate endpoint and payload for the model
+            endpoint, payload = get_endpoint_and_payload_for_model(model_name, config, random_input_manager)
+
+            task = asyncio.create_task(
+                send_request(session, f"RAG-{req_id}", model_name, "rag", endpoint, payload)
+            )
+            results.append(task)
+            req_id += 1
+
+            # Use Poisson process interval time
+            sleep_time = np_gen.exponential(1.0 / config.target_rps)
             await asyncio.sleep(sleep_time)
 
             now = time.time()
@@ -553,60 +477,78 @@ async def run_scenario_rag(session, results, seed):
             last_update_time = now
 
 
-async def run_scenario_single_model(session, results, model_index=0):
+async def run_scenario_single_model(session, results, config: BenchmarkConfig,
+                                    random_input_manager: RandomInputManager):
     """Scenario 5: Single Model Test (Baseline)"""
-    model_name = MODELS[model_index]
+
+    # Validate: must have exactly one model
+    if len(config.models) != 1:
+        raise ValueError(
+            f"Single model scenario requires exactly 1 model in config, but got {len(config.models)} models. "
+            f"Models: {[m.name for m in config.models]}"
+        )
+
+    model_name = config.models[0].name
     print(f"--- Starting Scenario: Single Model Test (Model: {model_name}) ---")
-    
+
     start_test = time.time()
     req_id = 0
-    
-    with tqdm(total=TEST_DURATION, desc=f"Single Model ({model_name}) Progress", unit="s") as pbar:
+
+    with tqdm(total=config.test_duration, desc=f"Single Model ({model_name}) Progress", unit="s") as pbar:
         last_update_time = start_test
-        
-        while time.time() - start_test < TEST_DURATION:
-            task = asyncio.create_task(send_request(session, f"SINGLE-{req_id}", model_name, "single_model"))
+
+        while time.time() - start_test < config.test_duration:
+            endpoint, payload = get_endpoint_and_payload_for_model(model_name, config, random_input_manager)
+            task = asyncio.create_task(
+                send_request(session, f"SINGLE-{req_id}", model_name, "single_model", endpoint, payload)
+            )
             results.append(task)
             req_id += 1
-            
-            await asyncio.sleep(1.0 / TARGET_RPS)
-            
+
+            await asyncio.sleep(1.0 / config.target_rps)
+
             now = time.time()
             pbar.update(now - last_update_time)
             last_update_time = now
 
-async def run_single_test(session, test_case, seed, model_index=0):
-    all_tasks = []
-    case_name = ""
-    
-    if test_case == 1:
-        case_name = "round_robin"
-        await run_scenario_round_robin(session, all_tasks)
-    elif test_case == 2:
-        case_name = "zipfian"
-        await run_scenario_zipfian(session, all_tasks, seed)
-    elif test_case == 3:
-        case_name = "bursty"
-        await run_scenario_bursty(session, all_tasks, seed)
-    elif test_case == 5:
-        case_name = f"single_model_{MODELS[model_index]}"
-        await run_scenario_single_model(session, all_tasks, model_index)
-    elif test_case == 6:
-        case_name = "rag"
-        await run_scenario_rag(session, all_tasks, seed)
+async def execute_scenario(session, scenario_name: str, config: BenchmarkConfig,
+                           random_input_manager: RandomInputManager):
+    """Execute a single benchmark scenario and collect results
 
-    print(f"\nAll requests dispatched for {case_name}. Waiting for pending responses...")
-    
+    Args:
+        session: aiohttp session
+        scenario_name: Name of scenario (round_robin, zipfian, bursty, single_model, rag)
+        config: BenchmarkConfig object
+        random_input_manager: RandomInputManager instance
+    """
+    all_tasks = []
+
+    if scenario_name == "round_robin":
+        await run_scenario_round_robin(session, all_tasks, config, random_input_manager)
+    elif scenario_name == "zipfian":
+        await run_scenario_zipfian(session, all_tasks, config, random_input_manager)
+    elif scenario_name == "bursty":
+        await run_scenario_bursty(session, all_tasks, config, random_input_manager)
+    elif scenario_name == "single_model":
+        await run_scenario_single_model(session, all_tasks, config, random_input_manager)
+    elif scenario_name == "rag":
+        await run_scenario_rag(session, all_tasks, config, random_input_manager)
+    else:
+        raise ValueError(f"Unknown scenario: {scenario_name}")
+
+    print(f"\nAll requests dispatched for {scenario_name}. Waiting for pending responses...")
+
     responses = []
     for f in tqdm(asyncio.as_completed(all_tasks), total=len(all_tasks), desc="Collecting Responses", unit="req"):
         responses.append(await f)
-    
+
     df = pd.DataFrame(responses)
-    filename = f"benchmark_results_{case_name}.csv"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"benchmark_results_{scenario_name}_{timestamp}.csv"
     df.to_csv(filename, index=False)
     print(f"Done! Results saved to {filename}")
-    
-    print(f"\n=== Quick Summary ({case_name}) ===")
+
+    print(f"\n=== Quick Summary ({scenario_name}) ===")
     if not df.empty:
         # Count failed requests
         total_requests = len(df)
@@ -618,7 +560,6 @@ async def run_single_test(session, test_case, seed, model_index=0):
         print(f"Success: {success_count} ({success_count/total_requests*100:.1f}%)")
         print(f"Failed: {failed_count} ({failed_count/total_requests*100:.1f}%)")
 
-        # Show failed breakdown by error reason if there are failures
         if failed_count > 0:
             print(f"\n--- Failed Breakdown by Reason ---")
             failed_df = df[df['status'] == 'FAIL']
@@ -631,111 +572,98 @@ async def run_single_test(session, test_case, seed, model_index=0):
     else:
         print("No data collected.")
 
-async def main(args):
-    global random_input_manager
+async def main(config_file: str):
+    """Main function to run benchmark scenarios based on YAML configuration
 
-    print(f"Running in RPS{TARGET_RPS}")
-    print(f"Running in Random Seed: {args.seed}")
+    Args:
+        config_file: Path to YAML configuration file
+    """
+    # Load configuration from YAML
+    print(f"Loading configuration from: {config_file}")
+    config = BenchmarkConfig.from_yaml(config_file)
+
+    print(f"\n=== Benchmark Configuration ===")
+    print(f"Test Duration: {config.test_duration}s")
+    print(f"Target RPS: {config.target_rps}")
+    print(f"Request Timeout: {config.request_timeout}s")
+    print(f"Random Seed: {config.seed}")
+    print(f"\nModels ({len(config.models)}):")
+    for model in config.models:
+        print(f"  - {model.name} ({model.type}): input={model.input_len}, output={model.output_len}")
 
     # Initialize tokenizer and random input manager
-    print(f"Loading tokenizer: {args.tokenizer_name}")
+    print(f"\nLoading tokenizer: {config.tokenizer_name}")
     try:
         tokenizer = get_tokenizer(
-            args.tokenizer_name,
-            trust_remote_code=args.trust_remote_code
+            config.tokenizer_name,
+            trust_remote_code=config.trust_remote_code
         )
 
         print("Initializing random input generator...")
-        random_input_manager = RandomInputManager(args, tokenizer)
+        random_input_manager = RandomInputManager(config, tokenizer)
         pool_size = random_input_manager._calculate_pool_size()
-        print(f"Calculated pool size: {pool_size} (TEST_DURATION={TEST_DURATION}s × TARGET_RPS={TARGET_RPS} × 4)")
+        print(f"Calculated pool size: {pool_size} samples per model")
         random_input_manager.generate_sample_pool()
-        print(f"Generated sample pools: {len(random_input_manager.llm_samples)} LLM, "
-              f"{len(random_input_manager.vlm_samples)} VLM, "
-              f"{len(random_input_manager.embedding_samples)} Embedding")
+
     except Exception as e:
-        print(f"Warning: Failed to initialize random input manager: {e}")
-        print("Falling back to legacy input generation")
-        random_input_manager = None
-
-    print("input test_case number:")
-    print("1. Round Robin")
-    print("2. Zipfian (Real Distribution)")
-    print("3. Bursty")
-    print("4. Run All (Multi-Model)")
-    print("5. Single Model Test")
-    print("6. RAG Workload (LLM:4, VLM:4, Embedding:2)")
-    
-    try:
-        test_case = int(input().strip())
-    except ValueError:
-        print("Invalid input")
+        print(f"Error: Failed to initialize random input manager: {e}")
         return
 
-    if test_case not in [1, 2, 3, 4, 5, 6]:
-        print(f"Please enter option 1, 2, 3, 4, 5, or 6")
-        return
-    
-    model_index = 0
-    if test_case == 5:
-        print("\nSelect model to test:")
-        for i, model in enumerate(MODELS):
-            print(f"{i}. {model}")
-        try:
-            model_index = int(input().strip())
-            if model_index < 0 or model_index >= len(MODELS):
-                print(f"Invalid model index. Please enter 0-{len(MODELS)-1}")
-                return
-        except ValueError:
-            print("Invalid input")
-            return
+    # Collect enabled scenarios
+    enabled_scenarios = []
+    if config.scenarios.round_robin_enabled:
+        enabled_scenarios.append("round_robin")
+    if config.scenarios.zipfian_enabled:
+        enabled_scenarios.append("zipfian")
+    if config.scenarios.bursty_enabled:
+        enabled_scenarios.append("bursty")
+    if config.scenarios.single_model_enabled:
+        enabled_scenarios.append("single_model")
+    if config.scenarios.rag_enabled:
+        enabled_scenarios.append("rag")
 
-    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+    if not enabled_scenarios:
+        print("\nWarning: No scenarios are enabled in the configuration!")
+        print("Please enable at least one scenario in the YAML config file.")
+        return
+
+    print(f"\nEnabled scenarios: {', '.join(enabled_scenarios)}")
+
+    # Run enabled scenarios
+    timeout = aiohttp.ClientTimeout(total=config.request_timeout)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        if test_case == 4:
-            scenarios = [1, 2, 3]
-            for i, scenario in enumerate(scenarios):
-                await run_single_test(session, scenario, args.seed)
-                if i < len(scenarios) - 1:
-                    print("\nWaiting 10 seconds before next test...")
-                    await asyncio.sleep(10)
-        else:
-            await run_single_test(session, test_case, args.seed, model_index)
+        for i, scenario_name in enumerate(enabled_scenarios):
+            print(f"\n{'='*60}")
+            print(f"Running scenario {i+1}/{len(enabled_scenarios)}: {scenario_name}")
+            print(f"{'='*60}")
 
-# 寫一個設定檔案，有多個模型 model type, ration, input len, output len 
+            try:
+                await execute_scenario(session, scenario_name, config, random_input_manager)
+            except Exception as e:
+                print(f"Error running scenario {scenario_name}: {e}")
+                import traceback
+                traceback.print_exc()
+
+            # Wait between scenarios (except after the last one)
+            if i < len(enabled_scenarios) - 1:
+                wait_time = 10
+                print(f"\nWaiting {wait_time} seconds before next scenario...")
+                await asyncio.sleep(wait_time)
+
+    print(f"\n{'='*60}")
+    print("All scenarios completed!")
+    print(f"{'='*60}") 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for experiments")
-
-    # Random input generation arguments
-    parser.add_argument("--random-input-len", type=int, default=500,
-                        help="Number of input tokens for random generation (default: 500)")
-    parser.add_argument("--random-output-len", type=int, default=500,
-                        help="Number of output tokens for random generation (default: 500)")
-    parser.add_argument("--random-range-ratio", type=float, default=0.0,
-                        help="Range ratio for input/output length variability [0.0-1.0]. "
-                             "0.0 = fixed length, 1.0 = max variability (default: 0.0)")
-
-    # Vision model specific arguments
-    parser.add_argument("--random-mm-base-items-per-request", type=int, default=1,
-                        help="number of images per VLM request (default: 1)")
-    parser.add_argument("--random-mm-num-mm-items-range-ratio", type=float, default=0.0,
-                        help="Range ratio for number of images per request (default: 0.0)")
-    parser.add_argument("--random-mm-bucket-config", type=str,
-                        default="{(256,256,1):0.5,(720,1280,1):0.5}",
-                        help="Image bucket config as dict string, e.g., "
-                             "'{(256,256,1):0.5,(720,1280,1):0.5}' for 50%% 256x256 "
-                             "and 50%% 720x1280 images (default: mixed sizes)")
-
-    # Tokenizer arguments
-    parser.add_argument("--tokenizer-name", type=str,
-                        default="Qwen/Qwen3-0.6B",
-                        help="HuggingFace tokenizer name for random input generation "
-                             "(default: Qwen/Qwen3-0.6B)")
-    parser.add_argument("--trust-remote-code", action="store_true",
-                        help="Trust remote code when loading tokenizer")
+    parser = argparse.ArgumentParser(
+        description="Multi-model benchmark tool for vLLM workloads"
+    )
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        help="Path to YAML configuration file"
+    )
 
     args = parser.parse_args()
 
-    asyncio.run(main(args))
+    asyncio.run(main(args.config))

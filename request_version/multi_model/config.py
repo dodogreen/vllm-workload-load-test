@@ -34,12 +34,24 @@ class ModelConfig:
 @dataclass
 class ScenarioConfig:
     """Scenario-specific configuration"""
-    # Bursty scenario
+
+    # Zipfian scenario - 需要權重參數
+    zipfian_weights: List[float] = field(default_factory=lambda: [0.8, 0.1, 0.1])
+
+    # Bursty scenario - 需要 burst 參數
     burst_interval: int = 10
     burst_size: int = 10
+    bursty_background_rps_ratio: float = 0.5
 
-    # RAG scenario
-    rag_weights: Dict[str, float] = field(default_factory=dict)
+    # RAG scenario - 需要權重參數
+    rag_weights: List[int] = field(default_factory=lambda: [40, 10, 50])
+
+    # Scenario enabled flags
+    round_robin_enabled: bool = False
+    zipfian_enabled: bool = False
+    bursty_enabled: bool = False
+    single_model_enabled: bool = False
+    rag_enabled: bool = False
 
 
 @dataclass
@@ -47,7 +59,7 @@ class BenchmarkConfig:
     """Main benchmark configuration"""
     test_duration: int = 60
     target_rps: int = 4
-    request_timeout: int = 2000
+    request_timeout: int = 1800  # timeout in seconds
     seed: int = 42
 
     tokenizer_name: str = "Qwen/Qwen3-0.6B"
@@ -86,9 +98,23 @@ class BenchmarkConfig:
         # Load scenarios
         scenario_data = data.get('scenarios', {})
         config.scenarios = ScenarioConfig(
-            burst_interval=scenario_data.get('burst_interval', 10),
-            burst_size=scenario_data.get('burst_size', 10),
-            rag_weights=scenario_data.get('rag_weights', {})
+            # Zipfian
+            zipfian_weights=scenario_data.get('zipfian', {}).get('weights', [0.8, 0.1, 0.1]),
+
+            # Bursty
+            burst_interval=scenario_data.get('bursty', {}).get('burst_interval', 10),
+            burst_size=scenario_data.get('bursty', {}).get('burst_size', 10),
+            bursty_background_rps_ratio=scenario_data.get('bursty', {}).get('background_rps_ratio', 0.5),
+
+            # RAG
+            rag_weights=scenario_data.get('rag', {}).get('weights', [40, 10, 50]),
+
+            # Enabled flags
+            round_robin_enabled=scenario_data.get('round_robin', {}).get('enabled', False),
+            zipfian_enabled=scenario_data.get('zipfian', {}).get('enabled', False),
+            bursty_enabled=scenario_data.get('bursty', {}).get('enabled', False),
+            single_model_enabled=scenario_data.get('single_model', {}).get('enabled', False),
+            rag_enabled=scenario_data.get('rag', {}).get('enabled', False)
         )
 
         return config

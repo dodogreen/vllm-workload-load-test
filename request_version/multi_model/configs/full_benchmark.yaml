@@ -1,0 +1,68 @@
+# Global benchmark settings
+test_duration: 60
+target_rps: 4
+request_timeout: 2000
+seed: 42
+
+# Tokenizer configuration
+tokenizer:
+  name: "Qwen/Qwen3-0.6B"
+  trust_remote_code: false
+
+# Model configurations
+models:
+  - name: "Chatbot"
+    type: "llm"
+    endpoint: "http://0.0.0.0:8000/v1/completions"
+    input_len: 500
+    output_len: 500
+    range_ratio: 0.0
+    temperature: 0.7
+    stream: true
+    ignore_eos: true
+
+  - name: "VisionProcessor"
+    type: "vlm"
+    endpoint: "http://0.0.0.0:8000/v1/chat/completions"
+    input_len: 500
+    output_len: 500
+    temperature: 0.7
+    stream: true
+    ignore_eos: true
+    mm_base_items_per_request: 1
+    mm_num_mm_items_range_ratio: 0.0
+    mm_bucket_config: "{(256,256,1):0.5,(720,1280,1):0.5}"
+
+  - name: "Embedding"
+    type: "embedding"
+    endpoint: "http://0.0.0.0:8000/v1/embeddings"
+    input_len: 500
+    output_len: 500
+    encoding_format: "float"
+
+# Scenario configurations
+scenarios:
+  # Round Robin: 輪詢所有模型
+  round_robin:
+    enabled: true
+
+  # Zipfian: 真實世界的分佈（需要指定各模型的權重）
+  zipfian:
+    enabled: true
+    weights: [0.8, 0.1, 0.1]  # 對應 models 列表順序
+
+  # Bursty: 突發流量測試
+  bursty:
+    enabled: true
+    burst_interval: 10        # 每 N 秒產生一次 burst
+    burst_size: 10            # 每次 burst 的請求數量
+    background_rps_ratio: 0.5 # 背景流量 = target_rps * ratio
+
+  # Single Model: 單一模型測試（config.models 必須只有一個模型）
+  single_model:
+    enabled: false
+
+  # RAG: RAG 工作負載
+  rag:
+    enabled: false
+    weights: [40, 10, 50]     # 對應 models 列表順序
