@@ -12,6 +12,9 @@ from tqdm import tqdm
 from vllm.benchmarks.datasets import RandomDataset, RandomMultiModalDataset
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
+# Configuration classes
+from config import BenchmarkConfig, ModelConfig, ScenarioConfig
+
 MODELS =  ['Chatbot', 'VisionProcessor', 'Embedding']
 
 # Test duration (seconds)
@@ -36,27 +39,26 @@ random_input_manager = None
 class RandomInputManager:
     """Manages random input generation using vLLM's RandomDataset classes."""
 
-    def __init__(self, args, tokenizer):
-        self.args = args
+    def __init__(self, config: BenchmarkConfig, tokenizer):
+        self.config = config
         self.tokenizer = tokenizer
 
         # Initialize datasets with seed
-        self.text_dataset = RandomDataset(random_seed=args.seed)
-        self.mm_dataset = RandomMultiModalDataset(random_seed=args.seed)
+        self.text_dataset = RandomDataset(random_seed=config.seed)
+        self.mm_dataset = RandomMultiModalDataset(random_seed=config.seed)
 
-        # Sample pools
-        self.llm_samples = []
-        self.vlm_samples = []
-        self.embedding_samples = []
+        # Model-based sample pools (not type-based)
+        self.model_samples = {}
+        self.model_indices = {}
 
-        # Index counters for accessing samples
-        self.llm_idx = 0
-        self.vlm_idx = 0
-        self.embedding_idx = 0
+        # Initialize pools and indices for each model
+        for model_cfg in config.models:
+            self.model_samples[model_cfg.name] = []
+            self.model_indices[model_cfg.name] = 0
 
     def _calculate_pool_size(self):
         """Calculate dynamic pool size based on test parameters."""
-        return TEST_DURATION * TARGET_RPS * 1
+        return self.config.test_duration * self.config.target_rps * 1
 
     def _parse_bucket_config(self, config_str):
         """Parse bucket config string to dict."""
@@ -69,45 +71,84 @@ class RandomInputManager:
             return {(256, 256, 1): 0.5, (720, 1280, 1): 0.5}
 
     def generate_sample_pool(self):
-        """Pre-generate sample pools for all model types."""
+        """Pre-generate sample pools for all models using model-specific configurations."""
         pool_size = self._calculate_pool_size()
 
-        # Generate LLM samples (text only)
-        self.llm_samples = self.text_dataset.sample(
-            tokenizer=self.tokenizer,
-            num_requests=pool_size,
-            input_len=self.args.random_input_len,
-            output_len=self.args.random_output_len,
-            range_ratio=self.args.random_range_ratio,
-            batchsize=1
-        )
-        random.shuffle(self.llm_samples)
+        for model_cfg in self.config.models:
+            if model_cfg.type == "llm":
+                # Generate text samples for LLM
+                samples = self.text_dataset.sample(
+                    tokenizer=self.tokenizer,
+                    num_requests=pool_size,
+                    input_len=model_cfg.input_len,
+                    output_len=model_cfg.output_len,
+                    range_ratio=model_cfg.range_ratio,
+                    batchsize=1
+                )
 
-        # Generate VLM samples (multimodal)
-        bucket_config = self._parse_bucket_config(self.args.random_mm_bucket_config)
-        self.vlm_samples = self.mm_dataset.sample(
-            tokenizer=self.tokenizer,
-            num_requests=pool_size,
-            input_len=self.args.random_input_len,
-            output_len=self.args.random_output_len,
-            range_ratio=self.args.random_range_ratio,
-            base_items_per_request=self.args.random_mm_base_items_per_request,
-            num_mm_items_range_ratio=self.args.random_mm_num_mm_items_range_ratio,
-            bucket_config=bucket_config,
-            limit_mm_per_prompt={"image": 255, "video": 0}
-        )
-        random.shuffle(self.vlm_samples)
+            elif model_cfg.type == "vlm":
+                # Generate multimodal samples for VLM
+                bucket_config = self._parse_bucket_config(model_cfg.mm_bucket_config)
+                samples = self.mm_dataset.sample(
+                    tokenizer=self.tokenizer,
+                    num_requests=pool_size,
+                    input_len=model_cfg.input_len,
+                    output_len=model_cfg.output_len,
+                    range_ratio=model_cfg.range_ratio,
+                    base_items_per_request=model_cfg.mm_base_items_per_request,
+                    num_mm_items_range_ratio=model_cfg.mm_num_mm_items_range_ratio,
+                    bucket_config=bucket_config,
+                    limit_mm_per_prompt={"image": 255, "video": 0}
+                )
 
-        # Generate Embedding samples (text only, batchsize=1)
-        self.embedding_samples = self.text_dataset.sample(
-            tokenizer=self.tokenizer,
-            num_requests=pool_size,
-            input_len=self.args.random_input_len,
-            output_len=self.args.random_output_len,
-            range_ratio=self.args.random_range_ratio,
-            batchsize=1
-        )
-        random.shuffle(self.embedding_samples)
+            elif model_cfg.type == "embedding":
+                # Generate text samples for embedding
+                samples = self.text_dataset.sample(
+                    tokenizer=self.tokenizer,
+                    num_requests=pool_size,
+                    input_len=model_cfg.input_len,
+                    output_len=model_cfg.output_len,
+                    range_ratio=model_cfg.range_ratio,
+                    batchsize=1
+                )
+
+            else:
+                raise ValueError(f"Unknown model type: {model_cfg.type} for model: {model_cfg.name}")
+
+            random.shuffle(samples)
+            self.model_samples[model_cfg.name] = samples
+
+        print(f"Generated sample pools:")
+        for model_name, samples in self.model_samples.items():
+            print(f"  {model_name}: {len(samples)} samples")
+
+    def get_sample(self, model_name: str):
+        """Get next sample for the specified model.
+
+        Returns:
+            For LLM/Embedding: prompt string
+            For VLM: (prompt, multi_modal_data) tuple
+        """
+        if model_name not in self.model_samples:
+            raise ValueError(f"Unknown model: {model_name}")
+
+        samples = self.model_samples[model_name]
+        if not samples:
+            return None
+
+        idx = self.model_indices[model_name]
+        sample = samples[idx]
+
+        # Increment and wrap around (循環使用，不 reshuffle)
+        self.model_indices[model_name] = (idx + 1) % len(samples)
+
+        # Get model config to determine return type
+        model_cfg = self.config.model_map[model_name]
+
+        if model_cfg.type == "vlm":
+            return sample.prompt, sample.multi_modal_data
+        else:  # llm or embedding
+            return sample.prompt
 
     def get_llm_sample(self):
         """Get next LLM sample (text prompt)."""
