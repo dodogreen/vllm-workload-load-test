@@ -5,6 +5,7 @@ import random
 import numpy as np
 import pandas as pd
 import argparse
+from dataclasses import dataclass
 from datetime import datetime
 from tqdm import tqdm
 
@@ -14,6 +15,13 @@ from vllm.transformers_utils.tokenizer import get_tokenizer
 
 # Configuration classes
 from config import BenchmarkConfig, ModelConfig, ScenarioConfig
+
+
+@dataclass
+class RerankerSample:
+    """Represents a reranker sample with query and documents"""
+    query: str
+    documents: list[str]
 
 
 class RandomInputManager:
@@ -61,7 +69,7 @@ class RandomInputManager:
                     tokenizer=self.tokenizer,
                     num_requests=pool_size,
                     input_len=model_cfg.input_len,
-                    output_len=model_cfg.output_len,
+                    # output_len=model_cfg.output_len,
                     range_ratio=model_cfg.range_ratio,
                     batchsize=1
                 )
@@ -73,7 +81,7 @@ class RandomInputManager:
                     tokenizer=self.tokenizer,
                     num_requests=pool_size,
                     input_len=model_cfg.input_len,
-                    output_len=model_cfg.output_len,
+                    # output_len=model_cfg.output_len,
                     range_ratio=model_cfg.range_ratio,
                     base_items_per_request=model_cfg.mm_base_items_per_request,
                     num_mm_items_range_ratio=model_cfg.mm_num_mm_items_range_ratio,
@@ -87,10 +95,42 @@ class RandomInputManager:
                     tokenizer=self.tokenizer,
                     num_requests=pool_size,
                     input_len=model_cfg.input_len,
-                    output_len=model_cfg.output_len,
                     range_ratio=model_cfg.range_ratio,
                     batchsize=1
                 )
+
+            elif model_cfg.type == "reranker":
+                # Generate query and document samples for reranker
+                # Generate queries using query_len
+                query_samples = self.text_dataset.sample(
+                    tokenizer=self.tokenizer,
+                    num_requests=pool_size,
+                    input_len=model_cfg.query_len,
+                    range_ratio=model_cfg.range_ratio,
+                    batchsize=1
+                )
+
+                # Generate documents using document_len and num_documents
+                # We need pool_size * num_documents total documents
+                total_docs_needed = pool_size * model_cfg.num_documents
+                doc_samples = self.text_dataset.sample(
+                    tokenizer=self.tokenizer,
+                    num_requests=total_docs_needed,
+                    input_len=model_cfg.document_len,
+                    range_ratio=model_cfg.range_ratio,
+                    batchsize=1
+                )
+
+                # Combine into (query, documents) tuples
+                samples = []
+                for i in range(pool_size):
+                    query = query_samples[i].prompt
+                    # Get num_documents documents for this query
+                    start_idx = i * model_cfg.num_documents
+                    end_idx = start_idx + model_cfg.num_documents
+                    documents = [doc.prompt for doc in doc_samples[start_idx:end_idx]]
+                    # Store as RerankerSample with query and documents
+                    samples.append(RerankerSample(query=query, documents=documents))
 
             else:
                 raise ValueError(f"Unknown model type: {model_cfg.type} for model: {model_cfg.name}")
@@ -127,6 +167,9 @@ class RandomInputManager:
 
         if model_cfg.type == "vlm":
             return sample.prompt, sample.multi_modal_data
+        elif model_cfg.type == "reranker":
+            # Return (query, documents) tuple
+            return sample.query, sample.documents
         else:  # llm or embedding
             return sample.prompt
 
@@ -177,6 +220,26 @@ def build_embedding_payload(model_config: ModelConfig, input_text: str):
     }
 
 
+def build_reranker_payload(model_config: ModelConfig, query: str, documents: list[str]):
+    """Build payload for reranker models using model-specific config
+
+    Args:
+        model_config: ModelConfig object with reranker-specific parameters
+        query: Search query string
+        documents: List of document strings to rerank
+
+    Returns:
+        Dict payload formatted for vLLM rerank API
+    """
+    return {
+        "model": model_config.name,
+        "query": query,
+        "documents": documents,
+        "top_n": model_config.top_n,
+        **model_config.extra_params
+    }
+
+
 def get_endpoint_and_payload_for_model(model_name: str, config: BenchmarkConfig,
                                         random_input_manager: RandomInputManager):
     """Get endpoint and payload based on model name from config"""
@@ -194,6 +257,9 @@ def get_endpoint_and_payload_for_model(model_name: str, config: BenchmarkConfig,
     elif model_config.type == "embedding":
         prompt = random_input_manager.get_sample(model_name)
         payload = build_embedding_payload(model_config, prompt)
+    elif model_config.type == "reranker":
+        query, documents = random_input_manager.get_sample(model_name)
+        payload = build_reranker_payload(model_config, query, documents)
     else:
         raise ValueError(f"Unknown model type: {model_config.type} for model: {model_name}")
 
@@ -589,7 +655,10 @@ async def main(config_file: str):
     print(f"Random Seed: {config.seed}")
     print(f"\nModels ({len(config.models)}):")
     for model in config.models:
-        print(f"  - {model.name} ({model.type}): input={model.input_len}, output={model.output_len}")
+        if model.type == "reranker":
+            print(f"  - {model.name} ({model.type}): query_len={model.query_len}, document_len={model.document_len}, num_documents={model.num_documents}, top_n={model.top_n}")
+        else:
+            print(f"  - {model.name} ({model.type}): input={model.input_len}, output={model.output_len}")
 
     # Initialize tokenizer and random input manager
     print(f"\nLoading tokenizer: {config.tokenizer_name}")

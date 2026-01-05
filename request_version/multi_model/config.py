@@ -10,10 +10,10 @@ import yaml
 class ModelConfig:
     """Per-model configuration"""
     name: str
-    type: str  # llm, vlm, embedding
+    type: str  # llm, vlm, embedding, reranker
     endpoint: str
-    input_len: int
-    output_len: int
+    input_len: int = 0  # Optional for reranker (uses query_len/document_len instead)
+    output_len: int = 0  # Optional for reranker
     range_ratio: float = 0.0
     temperature: float = 0.7
     stream: bool = True
@@ -26,6 +26,12 @@ class ModelConfig:
 
     # Embedding-specific parameters
     encoding_format: str = "float"
+
+    # Reranker-specific parameters
+    query_len: int = 200           # Length of query text
+    document_len: int = 1000        # Length of each document
+    num_documents: int = 5         # Number of documents to rerank
+    top_n: int = 4                 # Number of top results to return
 
     # Extra parameters
     extra_params: Dict[str, Any] = field(default_factory=dict)
