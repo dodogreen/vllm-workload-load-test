@@ -1,5 +1,5 @@
 # Global benchmark settings
-test_duration: 60
+test_duration: 10
 target_rps: 4
 request_timeout: 2000
 seed: 42
