@@ -1,7 +1,7 @@
 # Global benchmark settings
-test_duration: 10
-target_rps: 4
-request_timeout: 2000
+test_duration: 300
+target_rps: 2
+request_timeout: 6000
 seed: 42
 
 # Tokenizer configuration
@@ -13,9 +13,9 @@ tokenizer:
 models:
   - name: "Chatbot"
     type: "llm"
-    endpoint: "http://0.0.0.0:8000/v1/completions"
-    input_len: 500
-    output_len: 500
+    endpoint: "http://0.0.0.0:48000/v1/completions"
+    input_len: 900
+    output_len: 300
     range_ratio: 0.0
     temperature: 0.7
     stream: true
@@ -23,8 +23,8 @@ models:
 
   - name: "VisionProcessor"
     type: "vlm"
-    endpoint: "http://0.0.0.0:8000/v1/chat/completions"
-    input_len: 500
+    endpoint: "http://0.0.0.0:48000/v1/chat/completions"
+    input_len: 1200
     output_len: 500
     temperature: 0.7
     stream: true
@@ -35,25 +35,33 @@ models:
 
   - name: "Embedding"
     type: "embedding"
-    endpoint: "http://0.0.0.0:8000/v1/embeddings"
-    input_len: 500
-    output_len: 500
+    endpoint: "http://0.0.0.0:48000/v1/embeddings"
+    input_len: 1000
+    output_len: 1
     encoding_format: "float"
+
+  - name: "Reranker"
+    type: "reranker"
+    endpoint: "http://0.0.0.0:48000/v1/rerank"
+    query_len: 200                    # Length of search query
+    document_len: 1000                # Length of each document chunk
+    num_documents: 5                  # Number of documents to rerank
+    top_n: 4                          # Return top 4 documents
 
 # Scenario configurations
 scenarios:
   # Round Robin: 輪詢所有模型
   round_robin:
-    enabled: true
+    enabled: false
 
   # Zipfian: 真實世界的分佈（需要指定各模型的權重）
   zipfian:
-    enabled: true
+    enabled: false
     weights: [0.8, 0.1, 0.1]  # 對應 models 列表順序
 
   # Bursty: 突發流量測試
   bursty:
-    enabled: true
+    enabled: false
     burst_interval: 10        # 每 N 秒產生一次 burst
     burst_size: 10            # 每次 burst 的請求數量
     background_rps_ratio: 0.5 # 背景流量 = target_rps * ratio
@@ -64,5 +72,6 @@ scenarios:
 
   # RAG: RAG 工作負載
   rag:
-    enabled: false
-    weights: [40, 10, 50]     # 對應 models 列表順序
+    enabled: true
+    # weights: [40, 10, 50]     # 對應 models 列表順序 (3 models)
+    weights: [30, 10, 30, 30]     # 對應 models 列表順序 (4 models: Chatbot, VisionProcessor, Embedding, Reranker)
