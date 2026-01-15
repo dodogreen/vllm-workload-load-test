@@ -1,0 +1,35 @@
+# Single model test configuration - Embedding
+test_duration: 600
+target_rps: 2
+request_timeout: 2000
+seed: 42
+
+tokenizer:
+  name: "Qwen/Qwen3-0.6B"
+  trust_remote_code: false
+
+models:
+  - name: "Embedding"
+    type: "embedding"
+    endpoint: "http://127.0.0.1:48000/v1/embeddings"
+    input_len: 1000
+    output_len: 1
+    encoding_format: "float"
+
+scenarios:
+  round_robin:
+    enabled: false
+
+  zipfian:
+    enabled: false
+    weights: [1.0]
+
+  bursty:
+    enabled: false
+
+  single_model:
+    enabled: true
+
+  rag:
+    enabled: false
+    weights: [100]

@@ -1,0 +1,36 @@
+# Single model test configuration - Reranker
+test_duration: 600
+target_rps: 2
+request_timeout: 2000
+seed: 42
+
+tokenizer:
+  name: "Qwen/Qwen3-0.6B"
+  trust_remote_code: false
+
+models:
+  - name: "Reranker"
+    type: "reranker"
+    endpoint: "http://127.0.0.1:48000/v1/rerank"
+    query_len: 200                    # Length of search query
+    document_len: 1000                # Length of each document chunk
+    num_documents: 5                  # Number of documents to rerank
+    top_n: 4
+
+scenarios:
+  round_robin:
+    enabled: false
+
+  zipfian:
+    enabled: false
+    weights: [1.0]
+
+  bursty:
+    enabled: false
+
+  single_model:
+    enabled: true
+
+  rag:
+    enabled: false
+    weights: [100]
